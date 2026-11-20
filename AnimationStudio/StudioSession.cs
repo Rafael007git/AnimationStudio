@@ -28,7 +28,7 @@ namespace AnimationStudio
     public class StudioSession
     {
         public string AnimationName = "New_Animation";
-        public float Rate = 0.0333f;
+        public float Rate = 0.025f;
         public bool Loop = true;
         public bool Reverse = false;
 
@@ -147,7 +147,7 @@ namespace AnimationStudio
             string safeName = string.IsNullOrWhiteSpace(AnimationName) ? "CustomAnim" : AnimationName.Trim();
             string path = Path.Combine(SaveFolder, safeName + ".json");
 
-            string json = JsonConvert.SerializeObject(data, Formatting.Indented, new JsonSerializerSettings
+            string json = JsonConvert.SerializeObject(data, Newtonsoft.Json.Formatting.Indented, new JsonSerializerSettings
             {
                 NullValueHandling = NullValueHandling.Ignore
             });

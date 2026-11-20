@@ -5,8 +5,8 @@ using static System.Runtime.CompilerServices.RuntimeHelpers;
 
 namespace AnimationStudio
 {
-    [BepInPlugin("com.custom.animationstudio", "Animation Studio", "1.0.0")]
-    [BepInDependency("com.custom.furnitureanimations", BepInDependency.DependencyFlags.HardDependency)]
+    [BepInPlugin("com.lorifel007.animationstudio", "Animation Studio", "0.1.0")]
+    [BepInDependency("com.lorifel007.furnitureanimations", BepInDependency.DependencyFlags.HardDependency)]
     public class AnimationStudioPlugin : BaseUnityPlugin
     {
         public static ManualLogSource Log;

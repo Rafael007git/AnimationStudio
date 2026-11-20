@@ -159,11 +159,11 @@ namespace AnimationStudio
         {
             try
             {
-                File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(this, Formatting.Indented));
+                File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(this, Newtonsoft.Json.Formatting.Indented));
             }
             catch (Exception ex)
             {
-                AnimationStudioPlugin.Log?.LogWarning($"[AnimationStudio] Не удалось сохранить AnimationStudio_Filters.json: {ex.Message}");
+                AnimationStudioPlugin.Log?.LogWarning($"[{nameof(AnimationStudio)}] Failed to save AnimationStudio_Filters.json: {ex.Message}");
             }
         }
     }
