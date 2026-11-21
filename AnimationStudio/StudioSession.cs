@@ -41,26 +41,66 @@ namespace AnimationStudio
         private Vector3 _anchorRot;
         private bool _hasAnchor;
         private readonly AnchorGizmoMarker _anchorMarker = new AnchorGizmoMarker();
-
         private string SaveFolder => Path.Combine(Paths.PluginPath, "PoseAnimations");
+        private UIFreePose _cachedFreePoseUI;
 
         public void RefreshActiveCharacter()
         {
-            if (ActiveCharacter != null && ActiveCharacter.gameObject.activeInHierarchy)
-                return;
+            CharacterCustomization target = null;
 
-            var allChars = UnityEngine.Object.FindObjectsOfType<CharacterCustomization>();
-            foreach (var c in allChars)
+            // Priority 1: Directly from game's Global.code.uiFreePose singleton
+            if (Global.code != null && Global.code.uiFreePose != null && Global.code.uiFreePose.gameObject.activeInHierarchy)
             {
-                if (c != null && c.gameObject.activeInHierarchy)
+                if (Global.code.uiFreePose.selectedCharacter != null)
                 {
-                    ActiveCharacter = c;
-                    _anchorPos = ActiveCharacter.transform.localPosition;
-                    _anchorRot = ActiveCharacter.transform.localEulerAngles;
-                    _hasAnchor = true;
-                    break;
+                    target = Global.code.uiFreePose.selectedCharacter.GetComponent<CharacterCustomization>();
                 }
             }
+
+            // Priority 2: Fallback if Free Pose is closed
+            if (target == null)
+            {
+                if (ActiveCharacter != null && ActiveCharacter.gameObject.activeInHierarchy)
+                    return;
+
+                if (Player.code != null)
+                {
+                    target = Player.code.GetComponent<CharacterCustomization>();
+                }
+            }
+
+            if (target != null && target != ActiveCharacter)
+            {
+                if (ActiveCharacter != null)
+                {
+                    FurnitureAnimAPI.StopCompanionAnimation(ActiveCharacter);
+                    IsPlaying = false;
+                }
+
+                ActiveCharacter = target;
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                _hasAnchor = true;
+
+                AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Target character switched to: {ActiveCharacter.name}");
+
+                if (Keyframes.Count > 0 && SelectedIndex >= 0 && SelectedIndex < Keyframes.Count)
+                {
+                    SelectAndSnap(SelectedIndex);
+                }
+            }
+        }
+
+        public void ReleaseCharacter()
+        {
+            if (ActiveCharacter == null) return;
+
+            FurnitureAnimAPI.StopCompanionAnimation(ActiveCharacter);
+            IsPlaying = false;
+
+            AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Released character control: {ActiveCharacter.name}");
+            ActiveCharacter = null;
+            _hasAnchor = false;
         }
 
         public void UpdateAnchorAndGizmo(bool isStudioVisible)
@@ -180,7 +220,22 @@ namespace AnimationStudio
             RefreshActiveCharacter();
             if (ActiveCharacter == null || Keyframes.Count < 2) return;
 
-            var data = BuildPoseAnimationData(ActiveFilter);
+            float savedAngle = ActiveFilter.MinAngleDelta;
+            float savedPos = ActiveFilter.MinPosDelta;
+            ActiveFilter.MinAngleDelta = 0f;
+            ActiveFilter.MinPosDelta = 0f;
+
+            PoseAnimationData data;
+            try
+            {
+                data = BuildPoseAnimationData(ActiveFilter);
+            }
+            finally
+            {
+                ActiveFilter.MinAngleDelta = savedAngle;
+                ActiveFilter.MinPosDelta = savedPos;
+            }
+
             if (_hasAnchor)
             {
                 data.startPos = ToArr(_anchorPos);
@@ -358,13 +413,6 @@ namespace AnimationStudio
                             curr.bones[boneName] = prevPose;
                         }
                     }
-                    else if (i > 0 && Keyframes[i - 1].bones.TryGetValue(boneName, out var prevPose))
-                    {
-                        // Выпрямляем углы при загрузке, чтобы на таймлайне не было скачков на 360°
-                        var p = curr.bones[boneName];
-                        p.rot = StraightenEuler(prevPose.rot, p.rot);
-                        curr.bones[boneName] = p;
-                    }
                 }
             }
         }
@@ -436,14 +484,11 @@ namespace AnimationStudio
 
                     if (curr.bones.TryGetValue(boneName, out var targetPose))
                     {
-                        Vector3 sAngles = FromArr(prevRot);
-                        Vector3 eAngles = StraightenEuler(sAngles, targetPose.rot);
-
                         delta.boneDatas[boneName] = new BoneDelta(
                             prevPos,
                             ToArr(targetPose.pos),
                             prevRot,
-                            ToArr(eAngles)
+                            ToArr(targetPose.rot)
                         );
                     }
                     else

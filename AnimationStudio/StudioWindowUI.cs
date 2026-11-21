@@ -64,6 +64,9 @@ namespace AnimationStudio
 
             GUILayout.Label("Имя:", GUILayout.Width(35));
             _session.AnimationName = GUILayout.TextField(_session.AnimationName, GUILayout.Width(160));
+            string targetName = _session.ActiveCharacter != null ? _session.ActiveCharacter.name : "None";
+            GUILayout.Label($"Target: {targetName}", GUILayout.Width(160));
+
 
             _session.Loop = GUILayout.Toggle(_session.Loop, "Loop", GUILayout.Width(55));
             _session.Reverse = GUILayout.Toggle(_session.Reverse, "Reverse", GUILayout.Width(68));
