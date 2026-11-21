@@ -36,13 +36,19 @@ namespace AnimationStudio
         public int SelectedIndex = -1;
         public bool IsPlaying = false;
         public CharacterCustomization ActiveCharacter { get; private set; }
-        public BoneFilterProfile ActiveFilter = new BoneFilterProfile();
+        public BoneFilterConfig FilterConfig { get; private set; }
+        public StudioSession()
+        {
+            FilterConfig = BoneFilterConfig.Load();
+        }
+        public BoneFilterProfile ActiveFilter => FilterConfig.CurrentProfile;
         private Vector3 _anchorPos;
         private Vector3 _anchorRot;
         private bool _hasAnchor;
         private readonly AnchorGizmoMarker _anchorMarker = new AnchorGizmoMarker();
         private string SaveFolder => Path.Combine(Paths.PluginPath, "PoseAnimations");
         private UIFreePose _cachedFreePoseUI;
+
 
         public void RefreshActiveCharacter()
         {
@@ -209,10 +215,9 @@ namespace AnimationStudio
             var f0 = Keyframes[0];
             Vector3 deltaPos = kf.rootPos - f0.rootPos;
             Quaternion anchorQ = Quaternion.Euler(_anchorRot);
-            Quaternion deltaRotQ = Quaternion.Euler(kf.rootRot) * Quaternion.Inverse(Quaternion.Euler(f0.rootRot));
 
             ActiveCharacter.transform.localPosition = _anchorPos + (anchorQ * deltaPos);
-            ActiveCharacter.transform.localRotation = anchorQ * deltaRotQ;
+            ActiveCharacter.transform.localEulerAngles = _anchorRot + (kf.rootRot - f0.rootRot);
         }
 
         public void PlayPreview()
@@ -247,7 +252,13 @@ namespace AnimationStudio
             if (Keyframes.Count < 2) return;
             Directory.CreateDirectory(SaveFolder);
 
-            var data = BuildPoseAnimationData(ActiveFilter);
+            var data = BuildPoseAnimationData(ActiveFilter, bypassFilter: false);
+            if (_hasAnchor)
+            {
+                data.startPos = ToArr(_anchorPos);
+                data.startRot = ToArr(_anchorRot);
+            }
+
             string safeName = string.IsNullOrWhiteSpace(AnimationName) ? "CustomAnim" : AnimationName.Trim();
             string path = Path.Combine(SaveFolder, safeName + ".json");
 
@@ -256,7 +267,8 @@ namespace AnimationStudio
                 NullValueHandling = NullValueHandling.Ignore
             });
             File.WriteAllText(path, json);
-            AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Сохранено: {path}");
+            FurnitureAnimAPI.ReloadAnimationsFromDisk();
+            AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Saved: {path}");
         }
 
         public void LoadFromJson(string fileNameWithoutExt)
@@ -334,6 +346,100 @@ namespace AnimationStudio
             if (SelectedIndex == 0) SelectAndSnap(0);
 
             AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Загружена анимация: {path} (кадров: {Keyframes.Count})");
+        }
+
+        public void RealignAnchor()
+        {
+            RefreshActiveCharacter();
+            if (ActiveCharacter == null || Keyframes.Count == 0) return;
+
+            int savedIndex = SelectedIndex;
+            SelectAndSnap(0);
+
+            Transform charRoot = ActiveCharacter.transform;
+            Transform hipBone = null;
+
+            foreach (Transform t in charRoot.GetComponentsInChildren<Transform>(true))
+            {
+                if (t != null && t != charRoot && t.name == "hip")
+                {
+                    hipBone = t;
+                    break;
+                }
+            }
+            if (hipBone == null) return;
+
+            // 1. Запоминаем точное мировое положение и поворот таза hip, чтобы кукла не шелохнулась
+            Vector3 oldHipWorldPos = hipBone.position;
+            Quaternion oldHipWorldRot = hipBone.rotation;
+
+            // 2. Ищем высоту пола (Y) вертикальным лучом вниз из hip (игнорируя коллайдеры самой куклы)
+            float floorY = charRoot.position.y;
+            RaycastHit[] hits = Physics.RaycastAll(hipBone.position + Vector3.up * 0.5f, Vector3.down, 4.0f, ~0, QueryTriggerInteraction.Ignore);
+            float bestDist = float.MaxValue;
+            foreach (var hit in hits)
+            {
+                if (hit.transform == null || hit.transform == charRoot || hit.transform.IsChildOf(charRoot)) continue;
+                if (hit.distance < bestDist)
+                {
+                    bestDist = hit.distance;
+                    floorY = hit.point.y;
+                }
+            }
+
+            // 3. Вычисляем новую мировую точку креста на полу строго под тазом hip
+            Vector3 newRootWorldPos = new Vector3(oldHipWorldPos.x, floorY, oldHipWorldPos.z);
+            if (Vector3.Distance(charRoot.position, newRootWorldPos) >= 3.0f)
+            {
+                AnimationStudioPlugin.Log?.LogWarning("[AnimationStudio] Realign aborted: target floor point is too far.");
+                return;
+            }
+
+            // 4. Вычисляем новый мировой поворот креста (стрелка по проекции hip.forward на пол)
+            Vector3 flatHipFwd = new Vector3(hipBone.forward.x, 0f, hipBone.forward.z);
+            Quaternion newRootWorldRot = flatHipFwd.sqrMagnitude > 0.0001f
+                ? Quaternion.LookRotation(flatHipFwd.normalized, Vector3.up)
+                : charRoot.rotation;
+
+            // 5. Ставим корень (якорь) в новую точку и сразу вычисляем точные компенсирующие локальные pos/rot для hip
+            Quaternion oldRootWorldRot = charRoot.rotation;
+            Vector3 oldRootWorldPos = charRoot.position;
+
+            charRoot.position = newRootWorldPos;
+            charRoot.rotation = newRootWorldRot;
+
+            // Точная разница в локальном пространстве корня, чтобы вернуть hip в oldHipWorldPos и oldHipWorldRot
+            Quaternion localRotDelta = Quaternion.Inverse(newRootWorldRot) * oldRootWorldRot;
+            Vector3 newHipTargetLocalPos = charRoot.InverseTransformPoint(oldHipWorldPos);
+            Vector3 oldHipLocalPosBeforeMove = Keyframes[0].bones.TryGetValue("hip", out var f0Hip) ? f0Hip.pos : hipBone.localPosition;
+            Vector3 hipLocalPosOffset = newHipTargetLocalPos - (localRotDelta * oldHipLocalPosBeforeMove);
+
+            // 6. Обновляем базу Frame 0 и применяем компенсацию к root и hip во всех кадрах 0..N
+            Vector3 oldF0Pos = Keyframes[0].rootPos;
+            Vector3 oldF0Rot = Keyframes[0].rootRot;
+
+            _anchorPos = charRoot.localPosition;
+            _anchorRot = charRoot.localEulerAngles;
+            _hasAnchor = true;
+
+            Quaternion rootLocalRotDiff = Quaternion.Euler(_anchorRot) * Quaternion.Inverse(Quaternion.Euler(oldF0Rot));
+
+            for (int i = 0; i < Keyframes.Count; i++)
+            {
+                var kf = Keyframes[i];
+                kf.rootPos = _anchorPos + (rootLocalRotDiff * (kf.rootPos - oldF0Pos));
+                kf.rootRot = (rootLocalRotDiff * Quaternion.Euler(kf.rootRot)).eulerAngles;
+
+                if (kf.bones.TryGetValue("hip", out var hp))
+                {
+                    hp.pos = (localRotDelta * hp.pos) + hipLocalPosOffset;
+                    hp.rot = (localRotDelta * Quaternion.Euler(hp.rot)).eulerAngles;
+                    kf.bones["hip"] = hp;
+                }
+            }
+
+            SelectAndSnap(Mathf.Clamp(savedIndex, 0, Keyframes.Count - 1));
+            AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Anchor realigned to floor under hip at {newRootWorldPos}.");
         }
 
         public string[] GetAvailableJsonFiles()
@@ -417,7 +523,7 @@ namespace AnimationStudio
                 startRot = ToArr(f0.rootRot)
             };
 
-            // 1. Собираем все уникальные кости и проверяем, двигалась ли каждая хоть раз за всю анимацию
+            // 1. Собираем все уникальные кости и проверяем по активному профилю фильтра
             var allBones = new HashSet<string>();
             foreach (var kf in Keyframes)
                 foreach (var b in kf.bones.Keys)
@@ -426,14 +532,7 @@ namespace AnimationStudio
             var approvedBones = new List<string>();
             foreach (var boneName in allBones)
             {
-                if (bypassFilter)
-                {
-                    approvedBones.Add(boneName);
-                    continue;
-                }
-
-                bool hasMoved = CheckBoneMovedAcrossTimeline(boneName, filter.MinAngleDelta, filter.MinPosDelta);
-                if (filter.ShouldIncludeBone(boneName, hasMoved))
+                if (bypassFilter || filter.ShouldIncludeBone(boneName))
                 {
                     approvedBones.Add(boneName);
                 }

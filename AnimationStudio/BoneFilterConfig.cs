@@ -1,158 +1,115 @@
-﻿using BepInEx;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Xml;
+using UnityEngine;
 
 namespace AnimationStudio
 {
-    public class GreyGroup
+    [Serializable]
+    public class BoneGroupEntry
     {
-        public string Name;
-        public bool Enabled = true;        // Участвует ли группа в экспорте
-        public bool OnlyIfMoved = true;    // Писать только если кость реально меняла pos, rot или scale
-        public List<string> Patterns = new List<string>();
+        public string GroupName;
+        public bool Enabled;
+        public List<string> Bones = new List<string>();
     }
 
+    [Serializable]
     public class BoneFilterProfile
     {
-        public string ProfileName = "Default (Genesis 8)";
+        public string Name = "SWPT_Default";
+        public bool SaveAllUnlistedBones = true;
+        public List<string> BlackList = new List<string>();
+        public List<string> WhiteList = new List<string>();
+        public List<BoneGroupEntry> GreyGroups = new List<BoneGroupEntry>();
 
-        // Пороги чувствительности для авто-детекта движения по 3 каналам
-        public float MinAngleDelta = 0.05f;
-        public float MinPosDelta = 0.0005f;
-        public float MinScaleDelta = 0.005f;
-
-        // 1. Чёрный список: всегда игнорируются (служебные твисты и свет по умолчанию)
-        public List<string> Blacklist = new List<string>
+        public bool ShouldIncludeBone(string boneName)
         {
-            "Twist",
-            "Point Light"
-        };
+            if (string.IsNullOrEmpty(boneName)) return false;
 
-        // 2. Белый список: если не пуст — записываются ТОЛЬКО кости, совпавшие с ним
-        public List<string> Whitelist = new List<string>();
+            if (BlackList != null && BlackList.Contains(boneName))
+                return false;
 
-        // 3. Серые списки: гибкие группы под риг Genesis 8 Female
-        public List<GreyGroup> GreyLists = new List<GreyGroup>
-        {
-            new GreyGroup
+            if (GreyGroups != null)
             {
-                Name = "Breasts (Pectoral)",
-                Enabled = true,
-                OnlyIfMoved = true, // Если не трогали — работает физика игры; если поправили pos/rot/scale — запишется!
-                Patterns = new List<string> { "Pectoral" }
-            },
-            new GreyGroup
-            {
-                Name = "Fingers & Carpals",
-                Enabled = true,
-                OnlyIfMoved = true,
-                Patterns = new List<string>
+                foreach (var group in GreyGroups)
                 {
-                    "Carpal", "Thumb", "Index", "Mid1", "Mid2", "Mid3", "Ring", "Pinky"
-                }
-            },
-            new GreyGroup
-            {
-                Name = "Face, Eyes & Tongue",
-                Enabled = true,
-                OnlyIfMoved = true,
-                Patterns = new List<string>
-                {
-                    "Jaw", "Teeth", "Eye", "Brow", "Cheek", "Squint", "Lip",
-                    "Nasolabial", "Nose", "Nostril", "Chin", "FaceRig", "Tongue", "Ear"
-                }
-            },
-            new GreyGroup
-            {
-                Name = "Pelvis & Legs",
-                Enabled = true,
-                OnlyIfMoved = false, // Для анимаций всего тела пишем даже статичные ноги
-                Patterns = new List<string>
-                {
-                    "Genesis8Female", "hip", "pelvis", "Thigh", "Shin", "Foot", "Metatarsals", "Toe"
-                }
-            },
-            new GreyGroup
-            {
-                Name = "Intimate Anatomy",
-                Enabled = true,
-                OnlyIfMoved = true,
-                Patterns = new List<string>
-                {
-                    "Rectum", "Vagina", "Clitoris", "Colon", "Labia", "Labium"
+                    if (group != null && group.Bones != null && group.Bones.Contains(boneName))
+                        return group.Enabled;
                 }
             }
-        };
 
-        /// <summary>
-        /// Проверяет, должна ли кость попасть в итоговый JSON.
-        /// hasMoved = true, если за анимацию менялся хотя бы один из параметров: position, rotation или scale.
-        /// </summary>
-        public bool ShouldIncludeBone(string boneName, bool hasMoved)
+            if (WhiteList != null && WhiteList.Contains(boneName))
+                return true;
+
+            return SaveAllUnlistedBones;
+        }
+    }
+
+    [Serializable]
+    public class BoneFilterConfig
+    {
+        public int ActiveProfileIndex = 0;
+        public List<BoneFilterProfile> Profiles = new List<BoneFilterProfile>();
+
+        private static string ConfigPath => Path.Combine(BepInEx.Paths.ConfigPath, "AnimationStudio_Filters.json");
+
+        public BoneFilterProfile CurrentProfile
         {
-            // 1. Абсолютный запрет по чёрному списку
-            if (MatchesAny(boneName, Blacklist))
-                return false;
-
-            // 2. Жёсткий отбор по белому списку (если он заполнен)
-            if (Whitelist != null && Whitelist.Count > 0 && !MatchesAny(boneName, Whitelist))
-                return false;
-
-            // 3. Проверка серых списков
-            if (GreyLists != null)
+            get
             {
-                foreach (var grey in GreyLists)
+                if (Profiles == null || Profiles.Count == 0)
                 {
-                    if (MatchesAny(boneName, grey.Patterns))
-                    {
-                        if (!grey.Enabled)
-                            return false;
+                    Profiles = new List<BoneFilterProfile> { CreateDefaultProfile() };
+                    ActiveProfileIndex = 0;
+                }
+                ActiveProfileIndex = Mathf.Clamp(ActiveProfileIndex, 0, Profiles.Count - 1);
+                return Profiles[ActiveProfileIndex];
+            }
+        }
 
-                        if (grey.OnlyIfMoved && !hasMoved)
-                            return false;
+        public static BoneFilterConfig Load()
+        {
+            try
+            {
+                if (File.Exists(ConfigPath))
+                {
+                    string json = File.ReadAllText(ConfigPath);
+                    var cfg = JsonConvert.DeserializeObject<BoneFilterConfig>(json);
+                    if (cfg != null && cfg.Profiles != null && cfg.Profiles.Count > 0)
+                    {
+                        // Auto-upgrade old config format if GreyGroups was empty
+                        if (cfg.CurrentProfile.GreyGroups == null || cfg.CurrentProfile.GreyGroups.Count == 0)
+                        {
+                            cfg.Profiles[cfg.ActiveProfileIndex] = CreateDefaultProfile();
+                            cfg.Save();
+                        }
+                        return cfg;
                     }
                 }
             }
-
-            return true;
-        }
-
-        private static bool MatchesAny(string boneName, List<string> patterns)
-        {
-            if (patterns == null || string.IsNullOrEmpty(boneName)) return false;
-
-            for (int i = 0; i < patterns.Count; i++)
+            catch (Exception ex)
             {
-                string p = patterns[i];
-                if (!string.IsNullOrEmpty(p) && boneName.IndexOf(p, StringComparison.OrdinalIgnoreCase) >= 0)
-                    return true;
-            }
-            return false;
-        }
-
-        public static string ConfigPath => Path.Combine(Paths.PluginPath, "AnimationStudio_Filters.json");
-
-        public static BoneFilterProfile LoadOrCreateDefault()
-        {
-            if (File.Exists(ConfigPath))
-            {
-                try
-                {
-                    var loaded = JsonConvert.DeserializeObject<BoneFilterProfile>(File.ReadAllText(ConfigPath));
-                    if (loaded != null) return loaded;
-                }
-                catch (Exception ex)
-                {
-                    AnimationStudioPlugin.Log?.LogWarning($"[AnimationStudio] Ошибка чтения AnimationStudio_Filters.json, создан профиль по умолчанию: {ex.Message}");
-                }
+                AnimationStudioPlugin.Log?.LogWarning($"[AnimationStudio] Failed to load AnimationStudio_Filters.json: {ex.Message}");
             }
 
-            var def = new BoneFilterProfile();
-            def.Save();
-            return def;
+            var defaultCfg = new BoneFilterConfig
+            {
+                ActiveProfileIndex = 0,
+                Profiles = new List<BoneFilterProfile> { CreateDefaultProfile() }
+            };
+            defaultCfg.Save();
+            return defaultCfg;
+        }
+
+        public void ResetCurrentToDefault()
+        {
+            if (Profiles == null || Profiles.Count == 0)
+                Profiles = new List<BoneFilterProfile> { CreateDefaultProfile() };
+            else
+                Profiles[Mathf.Clamp(ActiveProfileIndex, 0, Profiles.Count - 1)] = CreateDefaultProfile();
+
+            Save();
         }
 
         public void Save()
@@ -160,11 +117,129 @@ namespace AnimationStudio
             try
             {
                 File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(this, Newtonsoft.Json.Formatting.Indented));
+                AnimationStudioPlugin.Log?.LogInfo("[AnimationStudio] Saved bone filter config to AnimationStudio_Filters.json.");
             }
             catch (Exception ex)
             {
-                AnimationStudioPlugin.Log?.LogWarning($"[{nameof(AnimationStudio)}] Failed to save AnimationStudio_Filters.json: {ex.Message}");
+                AnimationStudioPlugin.Log?.LogWarning($"[AnimationStudio] Failed to save AnimationStudio_Filters.json: {ex.Message}");
             }
+        }
+
+        public static BoneFilterProfile CreateDefaultProfile()
+        {
+            return new BoneFilterProfile
+            {
+                Name = "SWPT_Default",
+                SaveAllUnlistedBones = true,
+                BlackList = new List<string>
+                {
+                    "lowerFaceRig", "lBrowInner", "lBrowMid", "lBrowOuter",
+                    "lCheekLower", "lCheekUpper", "lEar", "lNasolabialLower",
+                    "lNasolabialMiddle", "lNasolabialMouthCorner", "lNasolabialUpper",
+                    "lNostril", "lSquintInner", "lSquintOuter",
+                    "rBrowInner", "rBrowMid", "rBrowOuter",
+                    "rCheekLower", "rCheekUpper", "rEar", "rNasolabialLower",
+                    "rNasolabialMiddle", "rNasolabialMouthCorner", "rNasolabialUpper",
+                    "rNostril", "rSquintInner", "rSquintOuter",
+                    "CenterBrow", "MidNoseBridge", "NoseTip",
+                    "upperFaceRig", "eyesRoot",
+                    "lEye", "lEyelidInner", "lEyelidLower", "lEyelidLowerInner",
+                    "lEyelidLowerOuter", "lEyelidOuter", "lEyelidUpper",
+                    "lEyelidUpperInner", "lEyelidUpperOuter",
+                    "rEye", "rEyelidInner", "rEyelidLower", "rEyelidLowerInner",
+                    "rEyelidLowerOuter", "rEyelidOuter", "rEyelidUpper",
+                    "rEyelidUpperInner", "rEyelidUpperOuter",
+                    "rh spear", "rh polearm", "rh weapon", "rh staff",
+                    "quiver", "lh bow", "lh shield", "bow holster",
+                    "lh weapon", "lh dagger", "back weapon", "hip weapon",
+                    "character light group", "spot light group",
+                    "Anus", "Vagina", "labia", "lLabia", "rLabia",
+                    "PenisBase", "PenisMid", "PenisTip", "Scrotum"
+                },
+                WhiteList = new List<string>
+                {
+                    "hip", "abdomenLower", "abdomenUpper", "chestLower", "chestUpper",
+                    "neckLower", "neckUpper", "head",
+                    "lCollar", "lShldrBend", "lShldrTwist", "lForearmBend", "lForearmTwist",
+                    "lHand", "lCarpal1", "lCarpal2", "lCarpal3", "lCarpal4",
+                    "lThumb1", "lThumb2", "lThumb3",
+                    "lIndex1", "lIndex2", "lIndex3",
+                    "lMid1", "lMid2", "lMid3",
+                    "lRing1", "lRing2", "lRing3",
+                    "lPinky1", "lPinky2", "lPinky3",
+                    "rCollar", "rShldrBend", "rShldrTwist", "rForearmBend", "rForearmTwist",
+                    "rHand", "rCarpal1", "rCarpal2", "rCarpal3", "rCarpal4",
+                    "rThumb1", "rThumb2", "rThumb3",
+                    "rIndex1", "rIndex2", "rIndex3",
+                    "rMid1", "rMid2", "rMid3",
+                    "rRing1", "rRing2", "rRing3",
+                    "rPinky1", "rPinky2", "rPinky3",
+                    "pelvis", "lThighBend", "lThighTwist", "lShin", "lFoot", "lMetatarsals", "lToe",
+                    "rThighBend", "rThighTwist", "rShin", "rFoot", "rMetatarsals", "rToe"
+                },
+                GreyGroups = new List<BoneGroupEntry>
+                {
+                    new BoneGroupEntry
+                    {
+                        GroupName = "jaw",
+                        Enabled = false,
+                        Bones = new List<string> { "lowerJaw" }
+                    },
+                    new BoneGroupEntry
+                    {
+                        GroupName = "lips",
+                        Enabled = false,
+                        Bones = new List<string>
+                        {
+                            "LipBelow", "LipLowerMiddle", "lLipCorner", "lLipLowerInner",
+                            "lLipLowerOuter", "lLipNasolabialCrease", "lLipUpperInner",
+                            "lLipUpperOuter", "LipUpperMiddle", "rLipCorner",
+                            "rLipLowerInner", "rLipLowerOuter", "rLipNasolabialCrease",
+                            "rLipUpperInner", "rLipUpperOuter"
+                        }
+                    },
+                    new BoneGroupEntry
+                    {
+                        GroupName = "tongue",
+                        Enabled = false,
+                        Bones = new List<string> { "tongue01", "tongue02", "tongue03", "tongue04", "tongueBase" }
+                    },
+                    new BoneGroupEntry
+                    {
+                        GroupName = "scene_lights",
+                        Enabled = false,
+                        Bones = new List<string> { "Point Light (5)", "Point Light (1)" }
+                    },
+                    new BoneGroupEntry
+                    {
+                        GroupName = "intimate_accent",
+                        Enabled = false,
+                        Bones = new List<string> { "Clitoris" }
+                    },
+                    new BoneGroupEntry
+                    {
+                        GroupName = "breasts",
+                        Enabled = false,
+                        Bones = new List<string> { "lPectoral", "rPectoral" }
+                    },
+                    new BoneGroupEntry
+                    {
+                        GroupName = "toes",
+                        Enabled = true,
+                        Bones = new List<string>
+                        {
+                            "lBigToe", "lBigToe_2", "lMidToe1", "lMidToe1_2", "lMidToe2", "lMidToe2_2",
+                            "lMidToe3", "lMidToe3_2", "lMidToe4", "lMidToe4_2", "lSmallToe1",
+                            "lSmallToe1_2", "lSmallToe2", "lSmallToe2_2", "lSmallToe3", "lSmallToe3_2",
+                            "lSmallToe4", "lSmallToe4_2",
+                            "rBigToe", "rBigToe_2", "rMidToe1", "rMidToe1_2", "rMidToe2", "rMidToe2_2",
+                            "rMidToe3", "rMidToe3_2", "rMidToe4", "rMidToe4_2", "rSmallToe1",
+                            "rSmallToe1_2", "rSmallToe2", "rSmallToe2_2", "rSmallToe3", "rSmallToe3_2",
+                            "rSmallToe4", "rSmallToe4_2"
+                        }
+                    }
+                }
+            };
         }
     }
 }

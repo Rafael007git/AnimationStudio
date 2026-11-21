@@ -23,7 +23,10 @@ namespace AnimationStudio
 
         private GUIStyle _cardLabelStyle;
         private GUIStyle _cardButtonStyle;
-
+        private Rect _boneListsWindowRect;
+        private Vector2 _boneListsScroll;
+        private bool _showBoneListsPopup;
+        private GUIStyle _boneListTextStyle;
 
         public bool IsVisible { get; private set; }
 
@@ -35,6 +38,7 @@ namespace AnimationStudio
                 Vector2 guiMousePos = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
                 if (_windowRect.Contains(guiMousePos)) return true;
                 if (_showLoadPopup && _loadWindowRect.Contains(guiMousePos)) return true;
+                if (_showBoneListsPopup && _boneListsWindowRect.Contains(guiMousePos)) return true;
                 return false;
             }
         }
@@ -44,7 +48,7 @@ namespace AnimationStudio
             _session = session;
             float startX = AnimationStudioPlugin.WindowX != null ? AnimationStudioPlugin.WindowX.Value : 580f;
             float startY = AnimationStudioPlugin.WindowY != null ? AnimationStudioPlugin.WindowY.Value : Mathf.Max(20f, Screen.height - 270f);
-            _windowRect = new Rect(startX, startY, 920f, 240f);
+            _windowRect = new Rect(startX, startY, 1098f, 240f);
             ClampMainWindowToScreen();
         }
 
@@ -61,6 +65,7 @@ namespace AnimationStudio
             {
                 SaveWindowPositionToConfig();
                 CloseLoadGallery();
+                _showBoneListsPopup = false;
             }
 
             IsVisible = visible;
@@ -110,6 +115,20 @@ namespace AnimationStudio
                 _loadWindowRect = GUI.Window(94822, _loadWindowRect, DrawLoadGalleryContents, "Load Animation (JSON + Preview)");
             }
 
+            if (_showBoneListsPopup)
+            {
+                float popupWidth = _windowRect.width;
+                float popupHeight = Mathf.Min(580f, Screen.height - 60f);
+                float popupY = _windowRect.y - popupHeight - 6f;
+                if (popupY < 10f)
+                {
+                    popupY = Mathf.Min(Screen.height - popupHeight - 10f, _windowRect.y + _windowRect.height + 6f);
+                }
+
+                _boneListsWindowRect = new Rect(_windowRect.x, popupY, popupWidth, popupHeight);
+                _boneListsWindowRect = GUI.Window(94823, _boneListsWindowRect, DrawBoneListsContents, "Bone Lists (Grey Groups Filter)");
+            }
+
             if (IsMouseOverUI &&
                 (Event.current.type == EventType.MouseDown || Event.current.type == EventType.ScrollWheel))
             {
@@ -141,6 +160,11 @@ namespace AnimationStudio
             string targetName = _session.ActiveCharacter != null ? _session.ActiveCharacter.name : "None";
             GUILayout.Label($"Target: {targetName}", GUILayout.Width(160));
 
+            if (GUILayout.Button("⊕ Realign", GUILayout.Width(82)))
+            {
+                // _session.RealignAnchor();
+            }
+
             _session.Loop = GUILayout.Toggle(_session.Loop, "Loop", GUILayout.Width(55));
             _session.Reverse = GUILayout.Toggle(_session.Reverse, "Reverse", GUILayout.Width(68));
 
@@ -169,11 +193,33 @@ namespace AnimationStudio
             if (GUILayout.Button("Load JSON", GUILayout.Width(85)))
             {
                 if (_showLoadPopup)
+                {
                     CloseLoadGallery();
+                }
                 else
+                {
+                    _showBoneListsPopup = false;
                     OpenLoadGallery();
+                }
             }
             GUI.backgroundColor = oldBg;
+
+            Color oldBg2 = GUI.backgroundColor;
+            if (_showBoneListsPopup) GUI.backgroundColor = Color.cyan;
+            if (GUILayout.Button("Bone Lists", GUILayout.Width(85)))
+            {
+                if (_showBoneListsPopup)
+                {
+                    _showBoneListsPopup = false;
+                }
+                else
+                {
+                    CloseLoadGallery();
+                    _boneListsScroll = Vector2.zero;
+                    _showBoneListsPopup = true;
+                }
+            }
+            GUI.backgroundColor = oldBg2;
 
             GUILayout.EndHorizontal();
         }
@@ -307,7 +353,7 @@ namespace AnimationStudio
             }
 
             // Сетка карточек: 5 столбцов, квадратное превью во всю ширину карточки + подпись снизу
-            const int columns = 5;
+            const int columns = 6;
             const float cardWidth = 172f;
             const float iconSize = 164f;
             const float cardHeight = 204f;
@@ -361,9 +407,83 @@ namespace AnimationStudio
             GUILayout.EndScrollView();
         }
 
+        private void DrawBoneListsContents(int id)
+        {
+            if (_boneListTextStyle == null)
+            {
+                _boneListTextStyle = new GUIStyle(GUI.skin.label)
+                {
+                    wordWrap = true,
+                    fontSize = 12,
+                    padding = new RectOffset(4, 4, 2, 2)
+                };
+            }
+
+            var profile = _session.FilterConfig.CurrentProfile;
+
+            GUILayout.BeginHorizontal(GUI.skin.box);
+            GUILayout.Label($"Profile: {profile.Name} — check the bone groups to be included at Save JSON:", GUILayout.ExpandWidth(true));
+
+            if (GUILayout.Button("Save Config", GUILayout.Width(95)))
+            {
+                _session.FilterConfig.Save();
+            }
+
+            if (GUILayout.Button("Reset Defaults", GUILayout.Width(105)))
+            {
+                _session.FilterConfig.ResetCurrentToDefault();
+            }
+
+            if (GUILayout.Button("Закрыть", GUILayout.Width(80)))
+            {
+                _showBoneListsPopup = false;
+                GUILayout.EndHorizontal();
+                return;
+            }
+            GUILayout.EndHorizontal();
+
+            _boneListsScroll = GUILayout.BeginScrollView(_boneListsScroll, GUILayout.ExpandHeight(true));
+
+            if (profile.GreyGroups != null)
+            {
+                foreach (var group in profile.GreyGroups)
+                {
+                    if (group == null) continue;
+
+                    GUILayout.BeginHorizontal(GUI.skin.box);
+
+                    Color prevColor = GUI.contentColor;
+                    GUI.contentColor = group.Enabled ? new Color(0.55f, 1f, 0.65f) : new Color(0.75f, 0.75f, 0.75f);
+
+                    bool newEnabled = GUILayout.Toggle(
+                        group.Enabled,
+                        $" {group.GroupName} ({group.Bones?.Count ?? 0})",
+                        GUILayout.Width(190)
+                    );
+
+                    if (newEnabled != group.Enabled)
+                    {
+                        group.Enabled = newEnabled;
+                        _session.FilterConfig.Save();
+                    }
+
+                    string bonesJoined = (group.Bones != null && group.Bones.Count > 0)
+                        ? string.Join(", ", group.Bones)
+                        : "(empty)";
+
+                    GUILayout.Label(bonesJoined, _boneListTextStyle, GUILayout.ExpandWidth(true));
+
+                    GUI.contentColor = prevColor;
+                    GUILayout.EndHorizontal();
+                }
+            }
+
+            GUILayout.EndScrollView();
+        }
+
         private void DrawTimelinePanel()
         {
-            GUILayout.BeginVertical(GUI.skin.box, GUILayout.Width(540), GUILayout.ExpandHeight(true));
+            GUILayout.BeginVertical(GUI.skin.box, GUILayout.Width(718), GUILayout.ExpandHeight(true));
 
             // Кнопки управления кадрами
             GUILayout.BeginHorizontal();
