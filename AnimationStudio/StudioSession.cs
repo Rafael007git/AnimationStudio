@@ -37,6 +37,10 @@ namespace AnimationStudio
         public bool IsPlaying = false;
         public CharacterCustomization ActiveCharacter { get; private set; }
         public BoneFilterProfile ActiveFilter = new BoneFilterProfile();
+        private Vector3 _anchorPos;
+        private Vector3 _anchorRot;
+        private bool _hasAnchor;
+        private readonly AnchorGizmoMarker _anchorMarker = new AnchorGizmoMarker();
 
         private string SaveFolder => Path.Combine(Paths.PluginPath, "PoseAnimations");
 
@@ -51,15 +55,55 @@ namespace AnimationStudio
                 if (c != null && c.gameObject.activeInHierarchy)
                 {
                     ActiveCharacter = c;
+                    _anchorPos = ActiveCharacter.transform.localPosition;
+                    _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                    _hasAnchor = true;
                     break;
                 }
             }
+        }
+
+        public void UpdateAnchorAndGizmo(bool isStudioVisible)
+        {
+            if (!isStudioVisible || ActiveCharacter == null || !ActiveCharacter.gameObject.activeInHierarchy)
+            {
+                _anchorMarker.UpdateTransform(Vector3.zero, Quaternion.identity, false);
+                return;
+            }
+
+            if (!_hasAnchor)
+            {
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                _hasAnchor = true;
+            }
+
+            // На Кадре 0 (или когда кадров еще нет) и не на воспроизведении — крест автоматически следует за куклой
+            if (!IsPlaying && SelectedIndex <= 0)
+            {
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+            }
+
+            // Отрисовываем крест в мировых координатах (учитывая возможного родителя персонажа)
+            Transform parent = ActiveCharacter.transform.parent;
+            Vector3 worldPos = parent != null ? parent.TransformPoint(_anchorPos) : _anchorPos;
+            Quaternion worldRot = parent != null ? parent.rotation * Quaternion.Euler(_anchorRot) : Quaternion.Euler(_anchorRot);
+
+            _anchorMarker.UpdateTransform(worldPos, worldRot, true);
         }
 
         public void CaptureNewFrame(int insertAfterIndex = -1)
         {
             RefreshActiveCharacter();
             if (ActiveCharacter == null) return;
+
+            if (Keyframes.Count == 0)
+            {
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                _hasAnchor = true;
+            }
 
             var entry = ReadCurrentSkeleton(ActiveCharacter);
             if (insertAfterIndex >= 0 && insertAfterIndex < Keyframes.Count)
@@ -114,8 +158,21 @@ namespace AnimationStudio
             }
 
             FurnitureAnimAPI.SnapCharacterToPose(ActiveCharacter, snapshot);
-            ActiveCharacter.transform.localPosition = kf.rootPos;
-            ActiveCharacter.transform.localEulerAngles = kf.rootRot;
+
+            if (!_hasAnchor)
+            {
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                _hasAnchor = true;
+            }
+
+            var f0 = Keyframes[0];
+            Vector3 deltaPos = kf.rootPos - f0.rootPos;
+            Quaternion anchorQ = Quaternion.Euler(_anchorRot);
+            Quaternion deltaRotQ = Quaternion.Euler(kf.rootRot) * Quaternion.Inverse(Quaternion.Euler(f0.rootRot));
+
+            ActiveCharacter.transform.localPosition = _anchorPos + (anchorQ * deltaPos);
+            ActiveCharacter.transform.localRotation = anchorQ * deltaRotQ;
         }
 
         public void PlayPreview()
@@ -124,6 +181,12 @@ namespace AnimationStudio
             if (ActiveCharacter == null || Keyframes.Count < 2) return;
 
             var data = BuildPoseAnimationData(ActiveFilter);
+            if (_hasAnchor)
+            {
+                data.startPos = ToArr(_anchorPos);
+                data.startRot = ToArr(_anchorRot);
+            }
+
             FurnitureAnimAPI.StartPreview(ActiveCharacter, data, 1.0f);
             IsPlaying = true;
         }
@@ -220,6 +283,13 @@ namespace AnimationStudio
             InflateLoadedKeyframes();
 
             SelectedIndex = Keyframes.Count > 0 ? 0 : -1;
+            RefreshActiveCharacter();
+            if (ActiveCharacter != null)
+            {
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                _hasAnchor = true;
+            }
             if (SelectedIndex == 0) SelectAndSnap(0);
 
             AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Загружена анимация: {path} (кадров: {Keyframes.Count})");

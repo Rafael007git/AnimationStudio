@@ -32,6 +32,13 @@ namespace AnimationStudio
             {
                 Session.RefreshActiveCharacter();
             }
+
+            Session.UpdateAnchorAndGizmo(_windowUI.IsVisible);
+        }
+
+        private void OnDestroy()
+        {
+            Session?.UpdateAnchorAndGizmo(false);
         }
 
         private void OnGUI()
