@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace AnimationStudio
 {
-    [BepInPlugin("com.lorifel007.animationstudio", "Animation Studio", "0.1.3")]
+    [BepInPlugin("com.lorifel007.animationstudio", "Animation Studio", "0.1.4")]
     [BepInDependency("com.lorifel007.furnitureanimations", BepInDependency.DependencyFlags.HardDependency)]
     public class AnimationStudioPlugin : BaseUnityPlugin
     {

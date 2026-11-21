@@ -22,6 +22,8 @@ namespace AnimationStudio
         private readonly Dictionary<string, Texture2D> _loadedThumbnails = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
 
         private GUIStyle _cardLabelStyle;
+        private GUIStyle _cardButtonStyle;
+
 
         public bool IsVisible { get; private set; }
 
@@ -97,7 +99,7 @@ namespace AnimationStudio
             if (_showLoadPopup)
             {
                 float galleryWidth = _windowRect.width;
-                float galleryHeight = 460f;
+                float galleryHeight = Mathf.Min(580f, Screen.height - 60f);
                 float galleryY = _windowRect.y - galleryHeight - 6f;
                 if (galleryY < 10f)
                 {
@@ -258,7 +260,19 @@ namespace AnimationStudio
                 {
                     alignment = TextAnchor.MiddleCenter,
                     wordWrap = true,
-                    fontSize = 11
+                    fontSize = 12,
+                    padding = new RectOffset(2, 2, 2, 2)
+                };
+            }
+
+            if (_cardButtonStyle == null)
+            {
+                _cardButtonStyle = new GUIStyle(GUI.skin.button)
+                {
+                    padding = new RectOffset(4, 4, 4, 4),
+                    margin = new RectOffset(3, 3, 3, 3),
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = 12
                 };
             }
 
@@ -292,11 +306,11 @@ namespace AnimationStudio
                 }
             }
 
-            // Сетка карточек (6 колонок)
-            const int columns = 6;
-            const float cardWidth = 140f;
-            const float cardHeight = 148f;
-            const float iconSize = 104f;
+            // Сетка карточек: 5 столбцов, квадратное превью во всю ширину карточки + подпись снизу
+            const int columns = 5;
+            const float cardWidth = 172f;
+            const float iconSize = 164f;
+            const float cardHeight = 204f;
 
             _loadListScroll = GUILayout.BeginScrollView(_loadListScroll, GUILayout.ExpandHeight(true));
 
@@ -309,32 +323,37 @@ namespace AnimationStudio
                     int idx = i + col;
                     if (idx >= count)
                     {
-                        GUILayout.Space(cardWidth + 4f);
+                        GUILayout.Space(cardWidth + 6f);
                         continue;
                     }
 
                     string animName = visibleFiles[idx];
-                    GUILayout.BeginVertical(GUI.skin.box, GUILayout.Width(cardWidth), GUILayout.Height(cardHeight));
-
                     _loadedThumbnails.TryGetValue(animName, out Texture2D iconTex);
 
-                    bool clicked = iconTex != null
-                        ? GUILayout.Button(iconTex, GUILayout.Width(iconSize), GUILayout.Height(iconSize))
-                        : GUILayout.Button("No\nPreview", GUILayout.Width(iconSize), GUILayout.Height(iconSize));
+                    Rect cardRect = GUILayoutUtility.GetRect(cardWidth, cardHeight, GUILayout.Width(cardWidth), GUILayout.Height(cardHeight));
+                    bool clicked = GUI.Button(cardRect, GUIContent.none, _cardButtonStyle);
 
-                    GUILayout.Label(animName, _cardLabelStyle, GUILayout.Width(cardWidth - 8f), GUILayout.Height(32f));
+                    Rect imgRect = new Rect(cardRect.x + 4f, cardRect.y + 4f, iconSize, iconSize);
+                    if (iconTex != null)
+                    {
+                        GUI.DrawTexture(imgRect, iconTex, ScaleMode.ScaleToFit);
+                    }
+                    else
+                    {
+                        GUI.Label(imgRect, "No Preview", _cardLabelStyle);
+                    }
+
+                    Rect labelRect = new Rect(cardRect.x + 4f, imgRect.yMax + 2f, iconSize, cardHeight - iconSize - 8f);
+                    GUI.Label(labelRect, animName, _cardLabelStyle);
 
                     if (clicked)
                     {
                         _session.LoadFromJson(animName);
                         CloseLoadGallery();
-                        GUILayout.EndVertical();
                         GUILayout.EndHorizontal();
                         GUILayout.EndScrollView();
                         return;
                     }
-
-                    GUILayout.EndVertical();
                 }
                 GUILayout.EndHorizontal();
             }
