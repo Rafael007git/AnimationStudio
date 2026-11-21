@@ -16,6 +16,15 @@ namespace AnimationStudio
         private string[] _cachedJsonFiles = new string[0];
 
         public bool IsVisible { get; private set; }
+        public bool IsMouseOverUI
+        {
+            get
+            {
+                if (!IsVisible) return false;
+                Vector2 guiMousePos = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+                return _windowRect.Contains(guiMousePos);
+            }
+        }
 
         public StudioWindowUI(StudioSession session)
         {
@@ -231,5 +240,6 @@ namespace AnimationStudio
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
         }
+
     }
 }
