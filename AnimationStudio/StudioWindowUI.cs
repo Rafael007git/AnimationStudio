@@ -1,5 +1,7 @@
 ﻿using FurnitureAnimationsMod;
 using System;
+using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 
 namespace AnimationStudio
@@ -9,44 +11,104 @@ namespace AnimationStudio
         private readonly StudioSession _session;
         private readonly BezierCurveDrawer _bezierDrawer = new BezierCurveDrawer();
 
-        private Rect _windowRect = new Rect(40f, Screen.height - 270f, 920f, 240f);
+        private Rect _windowRect;
+        private Rect _loadWindowRect;
         private Vector2 _timelineScroll;
         private Vector2 _loadListScroll;
+
         private bool _showLoadPopup;
-        private string[] _cachedJsonFiles = new string[0];
+        private string _loadSearchFilter = string.Empty;
+        private string[] _cachedJsonFiles = Array.Empty<string>();
+        private readonly Dictionary<string, Texture2D> _loadedThumbnails = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
+
+        private GUIStyle _cardLabelStyle;
 
         public bool IsVisible { get; private set; }
+
         public bool IsMouseOverUI
         {
             get
             {
                 if (!IsVisible) return false;
                 Vector2 guiMousePos = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-                return _windowRect.Contains(guiMousePos);
+                if (_windowRect.Contains(guiMousePos)) return true;
+                if (_showLoadPopup && _loadWindowRect.Contains(guiMousePos)) return true;
+                return false;
             }
         }
 
         public StudioWindowUI(StudioSession session)
         {
             _session = session;
+            float startX = AnimationStudioPlugin.WindowX != null ? AnimationStudioPlugin.WindowX.Value : 580f;
+            float startY = AnimationStudioPlugin.WindowY != null ? AnimationStudioPlugin.WindowY.Value : Mathf.Max(20f, Screen.height - 270f);
+            _windowRect = new Rect(startX, startY, 920f, 240f);
+            ClampMainWindowToScreen();
         }
 
         public void ToggleVisible()
         {
-            IsVisible = !IsVisible;
+            SetVisible(!IsVisible);
+        }
+
+        public void SetVisible(bool visible)
+        {
+            if (IsVisible == visible) return;
+
+            if (!visible)
+            {
+                SaveWindowPositionToConfig();
+                CloseLoadGallery();
+            }
+
+            IsVisible = visible;
+
             if (IsVisible)
             {
-                _windowRect.y = Mathf.Clamp(_windowRect.y, 10f, Screen.height - _windowRect.height - 10f);
+                ClampMainWindowToScreen();
                 _session.RefreshActiveCharacter();
             }
         }
 
+        public void SaveWindowPositionToConfig()
+        {
+            if (AnimationStudioPlugin.WindowX != null && AnimationStudioPlugin.WindowY != null)
+            {
+                AnimationStudioPlugin.WindowX.Value = _windowRect.x;
+                AnimationStudioPlugin.WindowY.Value = _windowRect.y;
+            }
+        }
+
+        private void ClampMainWindowToScreen()
+        {
+            _windowRect.x = Mathf.Clamp(_windowRect.x, 10f, Mathf.Max(10f, Screen.width - _windowRect.width - 10f));
+            _windowRect.y = Mathf.Clamp(_windowRect.y, 10f, Mathf.Max(10f, Screen.height - _windowRect.height - 10f));
+        }
+
         public void Draw()
         {
-            _windowRect = GUI.Window(94821, _windowRect, DrawWindowContents, "Animation Studio (F8)");
+            string hotkeyName = AnimationStudioPlugin.ToggleWindowKey != null
+                ? AnimationStudioPlugin.ToggleWindowKey.Value.ToString()
+                : "F7";
 
-            // Блокируем прокликивание сцены и вращение камеры под окном редактора
-            if (_windowRect.Contains(Event.current.mousePosition) &&
+            _windowRect = GUI.Window(94821, _windowRect, DrawWindowContents, $"Animation Studio ({hotkeyName})");
+            ClampMainWindowToScreen();
+
+            if (_showLoadPopup)
+            {
+                float galleryWidth = _windowRect.width;
+                float galleryHeight = 460f;
+                float galleryY = _windowRect.y - galleryHeight - 6f;
+                if (galleryY < 10f)
+                {
+                    galleryY = Mathf.Min(Screen.height - galleryHeight - 10f, _windowRect.y + _windowRect.height + 6f);
+                }
+
+                _loadWindowRect = new Rect(_windowRect.x, galleryY, galleryWidth, galleryHeight);
+                _loadWindowRect = GUI.Window(94822, _loadWindowRect, DrawLoadGalleryContents, "Load Animation (JSON + Preview)");
+            }
+
+            if (IsMouseOverUI &&
                 (Event.current.type == EventType.MouseDown || Event.current.type == EventType.ScrollWheel))
             {
                 Input.ResetInputAxes();
@@ -73,9 +135,9 @@ namespace AnimationStudio
 
             GUILayout.Label("Имя:", GUILayout.Width(35));
             _session.AnimationName = GUILayout.TextField(_session.AnimationName, GUILayout.Width(160));
+
             string targetName = _session.ActiveCharacter != null ? _session.ActiveCharacter.name : "None";
             GUILayout.Label($"Target: {targetName}", GUILayout.Width(160));
-
 
             _session.Loop = GUILayout.Toggle(_session.Loop, "Loop", GUILayout.Width(55));
             _session.Reverse = GUILayout.Toggle(_session.Reverse, "Reverse", GUILayout.Width(68));
@@ -100,29 +162,184 @@ namespace AnimationStudio
                 _session.SaveToJson();
             }
 
+            Color oldBg = GUI.backgroundColor;
+            if (_showLoadPopup) GUI.backgroundColor = Color.cyan;
             if (GUILayout.Button("Load JSON", GUILayout.Width(85)))
             {
-                _cachedJsonFiles = _session.GetAvailableJsonFiles();
-                _showLoadPopup = !_showLoadPopup;
+                if (_showLoadPopup)
+                    CloseLoadGallery();
+                else
+                    OpenLoadGallery();
             }
+            GUI.backgroundColor = oldBg;
 
             GUILayout.EndHorizontal();
+        }
 
-            if (_showLoadPopup)
+        private void OpenLoadGallery()
+        {
+            ClearThumbnails();
+            _cachedJsonFiles = _session.GetAvailableJsonFiles();
+            _loadListScroll = Vector2.zero;
+            LoadThumbnailsForFiles(_cachedJsonFiles);
+            _showLoadPopup = true;
+        }
+
+        private void CloseLoadGallery()
+        {
+            _showLoadPopup = false;
+            ClearThumbnails();
+        }
+
+        private void ClearThumbnails()
+        {
+            foreach (var kv in _loadedThumbnails)
             {
-                GUILayout.BeginVertical(GUI.skin.box, GUILayout.Height(90));
-                _loadListScroll = GUILayout.BeginScrollView(_loadListScroll);
-                foreach (var file in _cachedJsonFiles)
+                if (kv.Value != null)
                 {
-                    if (GUILayout.Button(file))
+                    UnityEngine.Object.Destroy(kv.Value);
+                }
+            }
+            _loadedThumbnails.Clear();
+        }
+
+        private void LoadThumbnailsForFiles(string[] animNames)
+        {
+            if (animNames == null) return;
+
+            string poseAnimDir = Path.Combine(BepInEx.Paths.PluginPath, "PoseAnimations");
+            string customAnimDir = ConfigManager.CustomAnimsPath;
+
+            string[] searchDirs = new[]
+            {
+                Path.Combine(poseAnimDir, "icons"),
+                poseAnimDir,
+                Path.Combine(customAnimDir, "icons"),
+                customAnimDir
+            };
+
+            foreach (string animName in animNames)
+            {
+                if (string.IsNullOrEmpty(animName) || _loadedThumbnails.ContainsKey(animName))
+                    continue;
+
+                foreach (string dir in searchDirs)
+                {
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    string pngPath = Path.Combine(dir, $"{animName}.png");
+                    if (File.Exists(pngPath))
                     {
-                        _session.LoadFromJson(file);
-                        _showLoadPopup = false;
+                        try
+                        {
+                            byte[] bytes = File.ReadAllBytes(pngPath);
+                            Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                            if (tex.LoadImage(bytes))
+                            {
+                                tex.name = animName;
+                                _loadedThumbnails[animName] = tex;
+                                break;
+                            }
+                            UnityEngine.Object.Destroy(tex);
+                        }
+                        catch (Exception ex)
+                        {
+                            AnimationStudioPlugin.Log?.LogWarning($"[AnimationStudio] Failed to load icon '{pngPath}': {ex.Message}");
+                        }
                     }
                 }
-                GUILayout.EndScrollView();
-                GUILayout.EndVertical();
             }
+        }
+
+        private void DrawLoadGalleryContents(int id)
+        {
+            if (_cardLabelStyle == null)
+            {
+                _cardLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    wordWrap = true,
+                    fontSize = 11
+                };
+            }
+
+            // Верхняя панель поиска и закрытия галереи
+            GUILayout.BeginHorizontal(GUI.skin.box);
+            GUILayout.Label("Поиск:", GUILayout.Width(48));
+            _loadSearchFilter = GUILayout.TextField(_loadSearchFilter, GUILayout.Width(240));
+            if (GUILayout.Button("✕", GUILayout.Width(24)))
+            {
+                _loadSearchFilter = string.Empty;
+            }
+
+            GUILayout.FlexibleSpace();
+            GUILayout.Label($"Всего: {_cachedJsonFiles.Length}", GUILayout.Width(80));
+            if (GUILayout.Button("Закрыть", GUILayout.Width(80)))
+            {
+                CloseLoadGallery();
+                GUILayout.EndHorizontal();
+                return;
+            }
+            GUILayout.EndHorizontal();
+
+            // Фильтрация списка
+            var visibleFiles = new List<string>(_cachedJsonFiles.Length);
+            bool hasFilter = !string.IsNullOrWhiteSpace(_loadSearchFilter);
+            foreach (string file in _cachedJsonFiles)
+            {
+                if (!hasFilter || file.IndexOf(_loadSearchFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    visibleFiles.Add(file);
+                }
+            }
+
+            // Сетка карточек (6 колонок)
+            const int columns = 6;
+            const float cardWidth = 140f;
+            const float cardHeight = 148f;
+            const float iconSize = 104f;
+
+            _loadListScroll = GUILayout.BeginScrollView(_loadListScroll, GUILayout.ExpandHeight(true));
+
+            int count = visibleFiles.Count;
+            for (int i = 0; i < count; i += columns)
+            {
+                GUILayout.BeginHorizontal();
+                for (int col = 0; col < columns; col++)
+                {
+                    int idx = i + col;
+                    if (idx >= count)
+                    {
+                        GUILayout.Space(cardWidth + 4f);
+                        continue;
+                    }
+
+                    string animName = visibleFiles[idx];
+                    GUILayout.BeginVertical(GUI.skin.box, GUILayout.Width(cardWidth), GUILayout.Height(cardHeight));
+
+                    _loadedThumbnails.TryGetValue(animName, out Texture2D iconTex);
+
+                    bool clicked = iconTex != null
+                        ? GUILayout.Button(iconTex, GUILayout.Width(iconSize), GUILayout.Height(iconSize))
+                        : GUILayout.Button("No\nPreview", GUILayout.Width(iconSize), GUILayout.Height(iconSize));
+
+                    GUILayout.Label(animName, _cardLabelStyle, GUILayout.Width(cardWidth - 8f), GUILayout.Height(32f));
+
+                    if (clicked)
+                    {
+                        _session.LoadFromJson(animName);
+                        CloseLoadGallery();
+                        GUILayout.EndVertical();
+                        GUILayout.EndHorizontal();
+                        GUILayout.EndScrollView();
+                        return;
+                    }
+
+                    GUILayout.EndVertical();
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.EndScrollView();
         }
 
         private void DrawTimelinePanel()
@@ -208,9 +425,13 @@ namespace AnimationStudio
                 delta.bezier = newUseBezier ? new[] { 0.42f, 0.0f, 0.58f, 1.0f } : null;
             }
 
-            if (delta.bezier != null)
+            if (delta.bezier != null && delta.bezier.Length >= 4)
             {
-                GUILayout.Label($"P1({delta.bezier[0]:0.00}, {delta.bezier[1]:0.00}) P2({delta.bezier[2]:0.00}, {delta.bezier[3]:0.00})");
+                float p1x = delta.bezier[0];
+                float p1y = delta.bezier[1];
+                float p2x = delta.bezier[2];
+                float p2y = delta.bezier[3];
+                GUILayout.Label($"P1({p1x:0.00}, {p1y:0.00}) P2({p2x:0.00}, {p2y:0.00})");
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("Lin")) delta.bezier = new[] { 0f, 0f, 1f, 1f };
                 if (GUILayout.Button("Smooth")) delta.bezier = new[] { 0.42f, 0f, 0.58f, 1f };
@@ -240,6 +461,5 @@ namespace AnimationStudio
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
         }
-
     }
 }

@@ -1,7 +1,7 @@
 ﻿using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using UnityEngine;
-using static System.Runtime.CompilerServices.RuntimeHelpers;
 
 namespace AnimationStudio
 {
@@ -11,7 +11,10 @@ namespace AnimationStudio
     {
         public static ManualLogSource Log;
         public static StudioSession Session;
-        public static BepInEx.Configuration.ConfigEntry<KeyCode> ToggleWindowKey;
+        public static ConfigEntry<KeyCode> ToggleWindowKey;
+        public static ConfigEntry<float> WindowX;
+        public static ConfigEntry<float> WindowY;
+
         private StudioWindowUI _windowUI;
         private bool _wasFreePoseOpen = false;
 
@@ -27,8 +30,22 @@ namespace AnimationStudio
                 "Hotkey to toggle the Animation Studio window."
             );
 
+            WindowX = Config.Bind(
+                "UI",
+                "WindowX",
+                580f,
+                "Saved X position of the Animation Studio window."
+            );
+
+            WindowY = Config.Bind(
+                "UI",
+                "WindowY",
+                Mathf.Max(20f, Screen.height - 270f),
+                "Saved Y position of the Animation Studio window."
+            );
+
             _windowUI = new StudioWindowUI(Session);
-            Log.LogInfo("[AnimationStudio] Загружен. Нажмите F8 в Free Pose для открытия студии.");
+            Log.LogInfo($"[AnimationStudio] Loaded. Press {ToggleWindowKey.Value} in Free Pose to open studio.");
         }
 
         private void Update()
@@ -45,6 +62,10 @@ namespace AnimationStudio
             if (_wasFreePoseOpen && !isFreePoseOpen)
             {
                 Session.ReleaseCharacter();
+                if (_windowUI.IsVisible)
+                {
+                    _windowUI.SetVisible(false);
+                }
             }
             _wasFreePoseOpen = isFreePoseOpen;
 
@@ -58,6 +79,7 @@ namespace AnimationStudio
 
         private void OnDestroy()
         {
+            _windowUI?.SaveWindowPositionToConfig();
             Session?.UpdateAnchorAndGizmo(false);
         }
 
@@ -76,6 +98,5 @@ namespace AnimationStudio
                 }
             }
         }
-
     }
 }
