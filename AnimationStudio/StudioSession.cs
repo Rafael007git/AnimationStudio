@@ -220,21 +220,7 @@ namespace AnimationStudio
             RefreshActiveCharacter();
             if (ActiveCharacter == null || Keyframes.Count < 2) return;
 
-            float savedAngle = ActiveFilter.MinAngleDelta;
-            float savedPos = ActiveFilter.MinPosDelta;
-            ActiveFilter.MinAngleDelta = 0f;
-            ActiveFilter.MinPosDelta = 0f;
-
-            PoseAnimationData data;
-            try
-            {
-                data = BuildPoseAnimationData(ActiveFilter);
-            }
-            finally
-            {
-                ActiveFilter.MinAngleDelta = savedAngle;
-                ActiveFilter.MinPosDelta = savedPos;
-            }
+            var data = BuildPoseAnimationData(ActiveFilter, bypassFilter: true);
 
             if (_hasAnchor)
             {
@@ -418,7 +404,7 @@ namespace AnimationStudio
         }
 
         // Сборка PoseAnimationData с фильтрами (Black/White/Grey), инфляцией и выпрямлением углов
-        private PoseAnimationData BuildPoseAnimationData(BoneFilterProfile filter)
+        private PoseAnimationData BuildPoseAnimationData(BoneFilterProfile filter, bool bypassFilter = false)
         {
             var f0 = Keyframes[0];
             var data = new PoseAnimationData
@@ -440,6 +426,12 @@ namespace AnimationStudio
             var approvedBones = new List<string>();
             foreach (var boneName in allBones)
             {
+                if (bypassFilter)
+                {
+                    approvedBones.Add(boneName);
+                    continue;
+                }
+
                 bool hasMoved = CheckBoneMovedAcrossTimeline(boneName, filter.MinAngleDelta, filter.MinPosDelta);
                 if (filter.ShouldIncludeBone(boneName, hasMoved))
                 {
