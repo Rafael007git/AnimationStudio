@@ -235,14 +235,66 @@ namespace AnimationStudio
 
             string safeName = string.IsNullOrWhiteSpace(AnimationName) ? "CustomAnim" : AnimationName.Trim();
             string path = Path.Combine(SaveFolder, safeName + ".json");
+            string pngPath = Path.Combine(SaveFolder, safeName + ".png");
 
             string json = JsonConvert.SerializeObject(data, Newtonsoft.Json.Formatting.Indented, new JsonSerializerSettings
             {
                 NullValueHandling = NullValueHandling.Ignore
             });
             File.WriteAllText(path, json);
+
+            CaptureThumbnailForAnimation(pngPath);
+
             FurnitureAnimAPI.ReloadAnimationsFromDisk();
             AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Saved: {path}");
+        }
+
+        private void CaptureThumbnailForAnimation(string pngPath)
+        {
+            try
+            {
+                if (Global.code == null || Global.code.uiFreePose == null || Global.code.freeCamera == null)
+                    return;
+
+                var photoComp = Global.code.uiFreePose.GetComponent<TakePhotos>();
+                var cam = Global.code.freeCamera.GetComponent<Camera>();
+                if (photoComp == null || cam == null)
+                    return;
+
+                UpdateAnchorAndGizmo(false);
+                Texture2D capturedTex = null;
+                try
+                {
+                    capturedTex = photoComp.CameraCapture(cam, new Rect(0f, 0f, 300f, 300f), "");
+                }
+                finally
+                {
+                    UpdateAnchorAndGizmo(true);
+                }
+
+                // Texture2D capturedTex = photoComp.CameraCapture(cam, new Rect(0f, 0f, 300f, 300f), "");
+
+                if (capturedTex != null)
+                {
+                    try
+                    {
+                        byte[] pngBytes = ImageConversion.EncodeToPNG(capturedTex);
+                        if (pngBytes != null && pngBytes.Length > 0)
+                        {
+                            File.WriteAllBytes(pngPath, pngBytes);
+                            AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Saved thumbnail: {pngPath}");
+                        }
+                    }
+                    finally
+                    {
+                        UnityEngine.Object.Destroy(capturedTex);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AnimationStudioPlugin.Log?.LogWarning($"[AnimationStudio] Failed to capture thumbnail: {ex.Message}");
+            }
         }
 
         public void LoadFromJson(string fileNameWithoutExt)
