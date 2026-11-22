@@ -49,7 +49,6 @@ namespace AnimationStudio
         private string SaveFolder => Path.Combine(Paths.PluginPath, "PoseAnimations");
         private UIFreePose _cachedFreePoseUI;
 
-
         public void RefreshActiveCharacter()
         {
             CharacterCustomization target = null;
@@ -152,6 +151,7 @@ namespace AnimationStudio
             }
 
             var entry = ReadCurrentSkeleton(ActiveCharacter);
+
             if (insertAfterIndex >= 0 && insertAfterIndex < Keyframes.Count)
             {
                 Keyframes.Insert(insertAfterIndex + 1, entry);
@@ -169,12 +169,22 @@ namespace AnimationStudio
             RefreshActiveCharacter();
             if (ActiveCharacter == null || SelectedIndex < 0 || SelectedIndex >= Keyframes.Count) return;
 
-            var old = Keyframes[SelectedIndex];
+            var prev = Keyframes[SelectedIndex];
+
+            if (SelectedIndex == 0)
+            {
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                _hasAnchor = true;
+            }
+
             var updated = ReadCurrentSkeleton(ActiveCharacter);
-            updated.frames = old.frames;
-            updated.easeMode = old.easeMode;
-            updated.bezier = old.bezier != null ? (float[])old.bezier.Clone() : null;
+            updated.frames = prev.frames;
+            updated.easeMode = prev.easeMode;
+            updated.bezier = prev.bezier != null ? (float[])prev.bezier.Clone() : null;
+
             Keyframes[SelectedIndex] = updated;
+            SelectAndSnap(SelectedIndex);
         }
 
         public void DeleteSelectedFrame()
@@ -182,42 +192,6 @@ namespace AnimationStudio
             if (SelectedIndex < 0 || SelectedIndex >= Keyframes.Count) return;
             Keyframes.RemoveAt(SelectedIndex);
             SelectedIndex = Mathf.Clamp(SelectedIndex - 1, -1, Keyframes.Count - 1);
-        }
-
-        public void SelectAndSnap(int index)
-        {
-            if (index < 0 || index >= Keyframes.Count) return;
-            SelectedIndex = index;
-            IsPlaying = false;
-
-            RefreshActiveCharacter();
-            if (ActiveCharacter == null) return;
-
-            var kf = Keyframes[index];
-            var snapshot = new Dictionary<string, BoneDelta>();
-            foreach (var kv in kf.bones)
-            {
-                snapshot[kv.Key] = new BoneDelta(
-                    ToArr(kv.Value.pos),
-                    ToArr(kv.Value.rot)
-                );
-            }
-
-            FurnitureAnimAPI.SnapCharacterToPose(ActiveCharacter, snapshot);
-
-            if (!_hasAnchor)
-            {
-                _anchorPos = ActiveCharacter.transform.localPosition;
-                _anchorRot = ActiveCharacter.transform.localEulerAngles;
-                _hasAnchor = true;
-            }
-
-            var f0 = Keyframes[0];
-            Vector3 deltaPos = kf.rootPos - f0.rootPos;
-            Quaternion anchorQ = Quaternion.Euler(_anchorRot);
-
-            ActiveCharacter.transform.localPosition = _anchorPos + (anchorQ * deltaPos);
-            ActiveCharacter.transform.localEulerAngles = _anchorRot + (kf.rootRot - f0.rootRot);
         }
 
         public void PlayPreview()
@@ -288,8 +262,8 @@ namespace AnimationStudio
             Vector3 baseRootPos = FromArr(data.startPos);
             Vector3 baseRootRot = FromArr(data.startRot);
 
-            // Frame 0
-            var f0 = new KeyframeEntry { rootPos = baseRootPos, rootRot = baseRootRot };
+            // Frame 0 (всегда в начале локальных координат якоря)
+            var f0 = new KeyframeEntry { rootPos = Vector3.zero, rootRot = Vector3.zero };
             if (data.boneStartDict != null)
             {
                 foreach (var kv in data.boneStartDict)
@@ -303,7 +277,7 @@ namespace AnimationStudio
             }
             Keyframes.Add(f0);
 
-            // Deltas -> Keyframes 1..N
+            // Deltas -> Keyframes 1..N (локальные смещения относительно якоря)
             if (data.deltas != null)
             {
                 foreach (var d in data.deltas)
@@ -313,8 +287,8 @@ namespace AnimationStudio
                         frames = Mathf.Max(1, d.frames),
                         easeMode = d.easeMode,
                         bezier = d.bezier != null && d.bezier.Length == 4 ? (float[])d.bezier.Clone() : null,
-                        rootPos = baseRootPos + FromArr(d.endPosDelta),
-                        rootRot = baseRootRot + FromArr(d.endRotDelta)
+                        rootPos = FromArr(d.endPosDelta),
+                        rootRot = FromArr(d.endRotDelta)
                     };
 
                     if (d.boneDatas != null)
@@ -348,100 +322,6 @@ namespace AnimationStudio
             AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Загружена анимация: {path} (кадров: {Keyframes.Count})");
         }
 
-        public void RealignAnchor()
-        {
-            RefreshActiveCharacter();
-            if (ActiveCharacter == null || Keyframes.Count == 0) return;
-
-            int savedIndex = SelectedIndex;
-            SelectAndSnap(0);
-
-            Transform charRoot = ActiveCharacter.transform;
-            Transform hipBone = null;
-
-            foreach (Transform t in charRoot.GetComponentsInChildren<Transform>(true))
-            {
-                if (t != null && t != charRoot && t.name == "hip")
-                {
-                    hipBone = t;
-                    break;
-                }
-            }
-            if (hipBone == null) return;
-
-            // 1. Запоминаем точное мировое положение и поворот таза hip, чтобы кукла не шелохнулась
-            Vector3 oldHipWorldPos = hipBone.position;
-            Quaternion oldHipWorldRot = hipBone.rotation;
-
-            // 2. Ищем высоту пола (Y) вертикальным лучом вниз из hip (игнорируя коллайдеры самой куклы)
-            float floorY = charRoot.position.y;
-            RaycastHit[] hits = Physics.RaycastAll(hipBone.position + Vector3.up * 0.5f, Vector3.down, 4.0f, ~0, QueryTriggerInteraction.Ignore);
-            float bestDist = float.MaxValue;
-            foreach (var hit in hits)
-            {
-                if (hit.transform == null || hit.transform == charRoot || hit.transform.IsChildOf(charRoot)) continue;
-                if (hit.distance < bestDist)
-                {
-                    bestDist = hit.distance;
-                    floorY = hit.point.y;
-                }
-            }
-
-            // 3. Вычисляем новую мировую точку креста на полу строго под тазом hip
-            Vector3 newRootWorldPos = new Vector3(oldHipWorldPos.x, floorY, oldHipWorldPos.z);
-            if (Vector3.Distance(charRoot.position, newRootWorldPos) >= 3.0f)
-            {
-                AnimationStudioPlugin.Log?.LogWarning("[AnimationStudio] Realign aborted: target floor point is too far.");
-                return;
-            }
-
-            // 4. Вычисляем новый мировой поворот креста (стрелка по проекции hip.forward на пол)
-            Vector3 flatHipFwd = new Vector3(hipBone.forward.x, 0f, hipBone.forward.z);
-            Quaternion newRootWorldRot = flatHipFwd.sqrMagnitude > 0.0001f
-                ? Quaternion.LookRotation(flatHipFwd.normalized, Vector3.up)
-                : charRoot.rotation;
-
-            // 5. Ставим корень (якорь) в новую точку и сразу вычисляем точные компенсирующие локальные pos/rot для hip
-            Quaternion oldRootWorldRot = charRoot.rotation;
-            Vector3 oldRootWorldPos = charRoot.position;
-
-            charRoot.position = newRootWorldPos;
-            charRoot.rotation = newRootWorldRot;
-
-            // Точная разница в локальном пространстве корня, чтобы вернуть hip в oldHipWorldPos и oldHipWorldRot
-            Quaternion localRotDelta = Quaternion.Inverse(newRootWorldRot) * oldRootWorldRot;
-            Vector3 newHipTargetLocalPos = charRoot.InverseTransformPoint(oldHipWorldPos);
-            Vector3 oldHipLocalPosBeforeMove = Keyframes[0].bones.TryGetValue("hip", out var f0Hip) ? f0Hip.pos : hipBone.localPosition;
-            Vector3 hipLocalPosOffset = newHipTargetLocalPos - (localRotDelta * oldHipLocalPosBeforeMove);
-
-            // 6. Обновляем базу Frame 0 и применяем компенсацию к root и hip во всех кадрах 0..N
-            Vector3 oldF0Pos = Keyframes[0].rootPos;
-            Vector3 oldF0Rot = Keyframes[0].rootRot;
-
-            _anchorPos = charRoot.localPosition;
-            _anchorRot = charRoot.localEulerAngles;
-            _hasAnchor = true;
-
-            Quaternion rootLocalRotDiff = Quaternion.Euler(_anchorRot) * Quaternion.Inverse(Quaternion.Euler(oldF0Rot));
-
-            for (int i = 0; i < Keyframes.Count; i++)
-            {
-                var kf = Keyframes[i];
-                kf.rootPos = _anchorPos + (rootLocalRotDiff * (kf.rootPos - oldF0Pos));
-                kf.rootRot = (rootLocalRotDiff * Quaternion.Euler(kf.rootRot)).eulerAngles;
-
-                if (kf.bones.TryGetValue("hip", out var hp))
-                {
-                    hp.pos = (localRotDelta * hp.pos) + hipLocalPosOffset;
-                    hp.rot = (localRotDelta * Quaternion.Euler(hp.rot)).eulerAngles;
-                    kf.bones["hip"] = hp;
-                }
-            }
-
-            SelectAndSnap(Mathf.Clamp(savedIndex, 0, Keyframes.Count - 1));
-            AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Anchor realigned to floor under hip at {newRootWorldPos}.");
-        }
-
         public string[] GetAvailableJsonFiles()
         {
             if (!Directory.Exists(SaveFolder)) return Array.Empty<string>();
@@ -451,34 +331,94 @@ namespace AnimationStudio
             return files;
         }
 
+        private static readonly HashSet<string> NativeIgnoreBones = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "makeup loc (1)",
+            "lgroup",
+            "rgroup",
+            "head target"
+        };
+
+        private static string FixBoneName(string name)
+        {
+            if (name.EndsWith("eyesRoot")) return "eyesRoot";
+            if (name.EndsWith("head parent")) return "head parent";
+            if (name.EndsWith("head target")) return "head target";
+            return name;
+        }
+
         private KeyframeEntry ReadCurrentSkeleton(CharacterCustomization character)
         {
             var entry = new KeyframeEntry
             {
-                rootPos = character.transform.localPosition,
-                rootRot = character.transform.localEulerAngles
+                rootPos = _hasAnchor ? (character.transform.localPosition - _anchorPos) : Vector3.zero,
+                rootRot = _hasAnchor ? (character.transform.localEulerAngles - _anchorRot) : Vector3.zero
             };
 
-            var transforms = character.GetComponentsInChildren<Transform>(true);
-            var lookup = new Dictionary<string, Transform>();
-            foreach (var t in transforms)
-            {
-                if (!lookup.ContainsKey(t.name))
-                    lookup[t.name] = t;
-            }
+            if (character.bonesNeedSave == null) return entry;
 
-            foreach (var boneName in DioramaConstants.AnatomyBoneRegistry)
+            foreach (Transform t in character.bonesNeedSave)
             {
-                if (lookup.TryGetValue(boneName, out Transform bone))
+                if (t == null || t == character.transform) continue;
+                string boneName = FixBoneName(t.name);
+                if (NativeIgnoreBones.Contains(boneName)) continue;
+
+                entry.bones[boneName] = new BonePose
                 {
-                    entry.bones[boneName] = new BonePose
-                    {
-                        pos = bone.localPosition,
-                        rot = bone.localEulerAngles
-                    };
-                }
+                    pos = t.localPosition,
+                    rot = t.localEulerAngles
+                };
             }
             return entry;
+        }
+
+        public void SelectAndSnap(int index)
+        {
+            RefreshActiveCharacter();
+            if (ActiveCharacter == null || index < 0 || index >= Keyframes.Count) return;
+
+            // Автоматически включаем режим FREEPOSE, если до этого была выбрана ванильная поза
+            if (Global.code != null &&
+                Global.code.uiFreePose != null &&
+                Global.code.uiFreePose.gameObject.activeInHierarchy &&
+                !Global.code.uiFreePose.isCustomPoseMode)
+            {
+                Global.code.uiFreePose.LetRuntimeTransformRun();
+            }
+
+            if (IsPlaying)
+            {
+                FurnitureAnimAPI.StopPreview(ActiveCharacter);
+                IsPlaying = false;
+            }
+
+            SelectedIndex = index;
+            var kf = Keyframes[index];
+
+            if (!_hasAnchor)
+            {
+                _anchorPos = ActiveCharacter.transform.localPosition;
+                _anchorRot = ActiveCharacter.transform.localEulerAngles;
+                _hasAnchor = true;
+            }
+
+            ActiveCharacter.transform.localPosition = _anchorPos + kf.rootPos;
+            ActiveCharacter.transform.localEulerAngles = _anchorRot + kf.rootRot;
+
+            if (ActiveCharacter.bonesNeedSave == null) return;
+
+            foreach (Transform t in ActiveCharacter.bonesNeedSave)
+            {
+                if (t == null) continue;
+                string boneName = FixBoneName(t.name);
+                if (NativeIgnoreBones.Contains(boneName)) continue;
+
+                if (kf.bones.TryGetValue(boneName, out var bonePose))
+                {
+                    t.localPosition = bonePose.pos;
+                    t.localEulerAngles = bonePose.rot;
+                }
+            }
         }
 
         // Вызывается в конце LoadFromJson(string fileNameWithoutExt) перед SelectAndSnap(0)
@@ -512,15 +452,18 @@ namespace AnimationStudio
         // Сборка PoseAnimationData с фильтрами (Black/White/Grey), инфляцией и выпрямлением углов
         private PoseAnimationData BuildPoseAnimationData(BoneFilterProfile filter, bool bypassFilter = false)
         {
+            Vector3 basePos = _hasAnchor ? _anchorPos : Vector3.zero;
+            Vector3 baseRot = _hasAnchor ? _anchorRot : Vector3.zero;
             var f0 = Keyframes[0];
+
             var data = new PoseAnimationData
             {
                 name = AnimationName,
                 rate = Rate,
                 loop = Loop,
                 reverse = Reverse,
-                startPos = ToArr(f0.rootPos),
-                startRot = ToArr(f0.rootRot)
+                startPos = ToArr(basePos + f0.rootPos),
+                startRot = ToArr(baseRot + f0.rootRot)
             };
 
             // 1. Собираем все уникальные кости и проверяем по активному профилю фильтра
