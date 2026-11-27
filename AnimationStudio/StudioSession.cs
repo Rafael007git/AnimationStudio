@@ -173,6 +173,15 @@ namespace AnimationStudio
                 ActiveTrack = track;
                 AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Target character switched to: {ActiveCharacter.name} (frames: {ActiveTrack.Keyframes.Count})");
             }
+
+            // Detach active character from floor (Humanoid Foot IK) without requiring a manual pose preset click
+            if (ActiveCharacter != null && ActiveCharacter.anim != null && RM.code != null && RM.code.genericAvatar != null)
+            {
+                if (ActiveCharacter.anim.avatar != RM.code.genericAvatar && ActiveTrack != null && ActiveTrack.Keyframes.Count == 0)
+                {
+                    DetachCharacterFromFloor(ActiveCharacter);
+                }
+            }
         }
 
         public void ReleaseCharacter()
@@ -454,6 +463,10 @@ namespace AnimationStudio
             SelectedIndex = Keyframes.Count > 0 ? 0 : -1;
             if (ActiveCharacter != null)
             {
+                if (ActiveCharacter.anim != null && RM.code != null && RM.code.genericAvatar != null && ActiveCharacter.anim.avatar != RM.code.genericAvatar)
+                {
+                    DetachCharacterFromFloor(ActiveCharacter);
+                }
                 _anchorPos = ActiveCharacter.transform.localPosition;
                 _anchorRot = ActiveCharacter.transform.localEulerAngles;
                 _hasAnchor = true;
@@ -461,6 +474,7 @@ namespace AnimationStudio
             if (SelectedIndex == 0) SelectAndSnap(0);
             AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Загружена анимация: {path} (кадров: {Keyframes.Count})");
         }
+
         public string[] GetAvailableJsonFiles()
         {
             if (!Directory.Exists(SaveFolder)) return Array.Empty<string>();
@@ -470,12 +484,12 @@ namespace AnimationStudio
             return files;
         }
         private static readonly HashSet<string> NativeIgnoreBones = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-{
-"makeup loc (1)",
-"lgroup",
-"rgroup",
-"head target"
-};
+            {
+            "makeup loc (1)",
+            "lgroup",
+            "rgroup",
+            "head target"
+            };
         private static string FixBoneName(string name)
         {
             if (name.EndsWith("eyesRoot")) return "eyesRoot";
@@ -568,6 +582,43 @@ namespace AnimationStudio
                 }
             }
         }
+
+        private void DetachCharacterFromFloor(CharacterCustomization cc)
+        {
+            if (cc == null || cc.anim == null || RM.code == null || RM.code.genericAvatar == null)
+                return;
+
+            var uiFreePose = Global.code != null ? Global.code.uiFreePose : null;
+            if (uiFreePose != null)
+            {
+                global::Pose targetPose = uiFreePose.defaulPose;
+                if (targetPose == null && RM.code.allFreePoses != null && RM.code.allFreePoses.items.Count > 0)
+                {
+                    var firstItem = RM.code.allFreePoses.items[0];
+                    if (firstItem != null)
+                        targetPose = firstItem.GetComponent<global::Pose>();
+                }
+
+                var prevSelected = uiFreePose.selectedCharacter;
+                uiFreePose.selectedCharacter = cc.transform;
+                try
+                {
+                    if (targetPose != null)
+                        uiFreePose.PoseButtonClicked(targetPose);
+                    else
+                        cc.anim.avatar = RM.code.genericAvatar;
+                }
+                finally
+                {
+                    uiFreePose.selectedCharacter = prevSelected;
+                }
+            }
+            else
+            {
+                cc.anim.avatar = RM.code.genericAvatar;
+            }
+        }
+
         // Сборка PoseAnimationData для указанной дорожки с фильтрами, инфляцией и выпрямлением углов
         private static PoseAnimationData BuildPoseAnimationData(CharacterTrack track, BoneFilterProfile filter, bool bypassFilter = false)
         {
