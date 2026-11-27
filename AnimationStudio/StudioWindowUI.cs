@@ -1,5 +1,6 @@
 ﻿using FurnitureAnimationsMod;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -155,42 +156,49 @@ namespace AnimationStudio
             GUILayout.BeginHorizontal(GUI.skin.box);
 
             GUILayout.Label("Имя:", GUILayout.Width(35));
-            _session.AnimationName = GUILayout.TextField(_session.AnimationName, GUILayout.Width(160));
+            _session.AnimationName = GUILayout.TextField(_session.AnimationName, GUILayout.Width(145));
 
             string targetName = _session.ActiveCharacter != null ? _session.ActiveCharacter.name : "None";
-            GUILayout.Label($"Target: {targetName}", GUILayout.Width(160));
+            GUILayout.Label($"Target: {targetName}", GUILayout.Width(135));
 
-            if (GUILayout.Button("⊕ Realign", GUILayout.Width(82)))
-            {
-                // _session.RealignAnchor();
-            }
-
-            _session.Loop = GUILayout.Toggle(_session.Loop, "Loop", GUILayout.Width(55));
-            _session.Reverse = GUILayout.Toggle(_session.Reverse, "Reverse", GUILayout.Width(68));
+            _session.Loop = GUILayout.Toggle(_session.Loop, "Loop", GUILayout.Width(52));
+            _session.Reverse = GUILayout.Toggle(_session.Reverse, "Reverse", GUILayout.Width(65));
 
             GUILayout.Label("Rate:", GUILayout.Width(35));
-            if (float.TryParse(GUILayout.TextField(_session.Rate.ToString("0.0000"), GUILayout.Width(55)), out float newRate))
+            if (float.TryParse(GUILayout.TextField(_session.Rate.ToString("0.0000"), GUILayout.Width(52)), out float newRate))
                 _session.Rate = Mathf.Max(0.001f, newRate);
 
             GUILayout.FlexibleSpace();
 
             if (!_session.IsPlaying)
             {
-                if (GUILayout.Button("▶ Play", GUILayout.Width(70))) _session.PlayPreview();
+                if (GUILayout.Button("▶ Play", GUILayout.Width(68))) _session.PlayPreview();
             }
             else
             {
-                if (GUILayout.Button("■ Stop", GUILayout.Width(70))) _session.StopPreview();
+                if (GUILayout.Button("■ Stop", GUILayout.Width(68))) _session.StopPreview();
             }
 
-            if (GUILayout.Button("Save JSON", GUILayout.Width(85)))
+            Color prevAllBg = GUI.backgroundColor;
+            if (_session.IsAnyPlaying) GUI.backgroundColor = new Color(0.6f, 1f, 0.7f);
+            if (!_session.IsAnyPlaying)
+            {
+                if (GUILayout.Button("▶ All ▶", GUILayout.Width(70))) _session.PlayAllPreviews();
+            }
+            else
+            {
+                if (GUILayout.Button("■ All ■", GUILayout.Width(70))) _session.StopAllPreviews();
+            }
+            GUI.backgroundColor = prevAllBg;
+
+            if (GUILayout.Button("Save JSON", GUILayout.Width(82)))
             {
                 _session.SaveToJson();
             }
 
             Color oldBg = GUI.backgroundColor;
             if (_showLoadPopup) GUI.backgroundColor = Color.cyan;
-            if (GUILayout.Button("Load JSON", GUILayout.Width(85)))
+            if (GUILayout.Button("Load JSON", GUILayout.Width(82)))
             {
                 if (_showLoadPopup)
                 {
@@ -206,7 +214,7 @@ namespace AnimationStudio
 
             Color oldBg2 = GUI.backgroundColor;
             if (_showBoneListsPopup) GUI.backgroundColor = Color.cyan;
-            if (GUILayout.Button("Bone Lists", GUILayout.Width(85)))
+            if (GUILayout.Button("Bone Lists", GUILayout.Width(82)))
             {
                 if (_showBoneListsPopup)
                 {
@@ -270,7 +278,6 @@ namespace AnimationStudio
             {
                 if (string.IsNullOrEmpty(animName) || _loadedThumbnails.ContainsKey(animName))
                     continue;
-
                 foreach (string dir in searchDirs)
                 {
                     if (string.IsNullOrEmpty(dir)) continue;
@@ -297,7 +304,6 @@ namespace AnimationStudio
                 }
             }
         }
-
         private void DrawLoadGalleryContents(int id)
         {
             if (_cardLabelStyle == null)
@@ -310,7 +316,6 @@ namespace AnimationStudio
                     padding = new RectOffset(2, 2, 2, 2)
                 };
             }
-
             if (_cardButtonStyle == null)
             {
                 _cardButtonStyle = new GUIStyle(GUI.skin.button)
@@ -321,7 +326,6 @@ namespace AnimationStudio
                     fontSize = 12
                 };
             }
-
             // Верхняя панель поиска и закрытия галереи
             GUILayout.BeginHorizontal(GUI.skin.box);
             GUILayout.Label("Поиск:", GUILayout.Width(48));
@@ -330,7 +334,6 @@ namespace AnimationStudio
             {
                 _loadSearchFilter = string.Empty;
             }
-
             GUILayout.FlexibleSpace();
             GUILayout.Label($"Всего: {_cachedJsonFiles.Length}", GUILayout.Width(80));
             if (GUILayout.Button("Закрыть", GUILayout.Width(80)))
@@ -340,7 +343,6 @@ namespace AnimationStudio
                 return;
             }
             GUILayout.EndHorizontal();
-
             // Фильтрация списка
             var visibleFiles = new List<string>(_cachedJsonFiles.Length);
             bool hasFilter = !string.IsNullOrWhiteSpace(_loadSearchFilter);
@@ -351,15 +353,12 @@ namespace AnimationStudio
                     visibleFiles.Add(file);
                 }
             }
-
-            // Сетка карточек: 5 столбцов, квадратное превью во всю ширину карточки + подпись снизу
+            // Сетка карточек: 6 столбцов, квадратное превью во всю ширину карточки + подпись снизу
             const int columns = 6;
             const float cardWidth = 172f;
             const float iconSize = 164f;
             const float cardHeight = 204f;
-
             _loadListScroll = GUILayout.BeginScrollView(_loadListScroll, GUILayout.ExpandHeight(true));
-
             int count = visibleFiles.Count;
             for (int i = 0; i < count; i += columns)
             {
@@ -372,13 +371,10 @@ namespace AnimationStudio
                         GUILayout.Space(cardWidth + 6f);
                         continue;
                     }
-
                     string animName = visibleFiles[idx];
                     _loadedThumbnails.TryGetValue(animName, out Texture2D iconTex);
-
                     Rect cardRect = GUILayoutUtility.GetRect(cardWidth, cardHeight, GUILayout.Width(cardWidth), GUILayout.Height(cardHeight));
                     bool clicked = GUI.Button(cardRect, GUIContent.none, _cardButtonStyle);
-
                     Rect imgRect = new Rect(cardRect.x + 4f, cardRect.y + 4f, iconSize, iconSize);
                     if (iconTex != null)
                     {
@@ -388,10 +384,8 @@ namespace AnimationStudio
                     {
                         GUI.Label(imgRect, "No Preview", _cardLabelStyle);
                     }
-
                     Rect labelRect = new Rect(cardRect.x + 4f, imgRect.yMax + 2f, iconSize, cardHeight - iconSize - 8f);
                     GUI.Label(labelRect, animName, _cardLabelStyle);
-
                     if (clicked)
                     {
                         _session.LoadFromJson(animName);
@@ -403,10 +397,8 @@ namespace AnimationStudio
                 }
                 GUILayout.EndHorizontal();
             }
-
             GUILayout.EndScrollView();
         }
-
         private void DrawBoneListsContents(int id)
         {
             if (_boneListTextStyle == null)
@@ -418,22 +410,17 @@ namespace AnimationStudio
                     padding = new RectOffset(4, 4, 2, 2)
                 };
             }
-
             var profile = _session.FilterConfig.CurrentProfile;
-
             GUILayout.BeginHorizontal(GUI.skin.box);
             GUILayout.Label($"Profile: {profile.Name} — check the bone groups to be included at Save JSON:", GUILayout.ExpandWidth(true));
-
             if (GUILayout.Button("Save Config", GUILayout.Width(95)))
             {
                 _session.FilterConfig.Save();
             }
-
             if (GUILayout.Button("Reset Defaults", GUILayout.Width(105)))
             {
                 _session.FilterConfig.ResetCurrentToDefault();
             }
-
             if (GUILayout.Button("Закрыть", GUILayout.Width(80)))
             {
                 _showBoneListsPopup = false;
@@ -441,55 +428,42 @@ namespace AnimationStudio
                 return;
             }
             GUILayout.EndHorizontal();
-
             _boneListsScroll = GUILayout.BeginScrollView(_boneListsScroll, GUILayout.ExpandHeight(true));
-
             if (profile.GreyGroups != null)
             {
                 foreach (var group in profile.GreyGroups)
                 {
                     if (group == null) continue;
-
                     GUILayout.BeginHorizontal(GUI.skin.box);
-
                     Color prevColor = GUI.contentColor;
                     GUI.contentColor = group.Enabled ? new Color(0.55f, 1f, 0.65f) : new Color(0.75f, 0.75f, 0.75f);
-
                     bool newEnabled = GUILayout.Toggle(
-                        group.Enabled,
-                        $" {group.GroupName} ({group.Bones?.Count ?? 0})",
-                        GUILayout.Width(190)
+                    group.Enabled,
+                    $" {group.GroupName} ({group.Bones?.Count ?? 0})",
+                    GUILayout.Width(190)
                     );
-
                     if (newEnabled != group.Enabled)
                     {
                         group.Enabled = newEnabled;
                         _session.FilterConfig.Save();
                     }
-
                     string bonesJoined = (group.Bones != null && group.Bones.Count > 0)
-                        ? string.Join(", ", group.Bones)
-                        : "(empty)";
-
+                    ? string.Join(", ", group.Bones)
+                    : "(empty)";
                     GUILayout.Label(bonesJoined, _boneListTextStyle, GUILayout.ExpandWidth(true));
-
                     GUI.contentColor = prevColor;
                     GUILayout.EndHorizontal();
                 }
             }
-
             GUILayout.EndScrollView();
         }
-
         private void DrawTimelinePanel()
         {
             GUILayout.BeginVertical(GUI.skin.box, GUILayout.Width(718), GUILayout.ExpandHeight(true));
-
             // Кнопки управления кадрами
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("+ Capture Frame", GUILayout.Width(120)))
                 _session.CaptureNewFrame();
-
             GUI.enabled = _session.SelectedIndex >= 0;
             if (GUILayout.Button("Insert After", GUILayout.Width(90)))
                 _session.CaptureNewFrame(_session.SelectedIndex);
@@ -498,72 +472,71 @@ namespace AnimationStudio
             if (GUILayout.Button("Delete", GUILayout.Width(65)))
                 _session.DeleteSelectedFrame();
             GUI.enabled = true;
+
+            // Счётчик длительности анимации
+            int totalFrames = 0;
+            for (int i = 1; i < _session.Keyframes.Count; i++)
+            {
+                totalFrames += Mathf.Max(1, _session.Keyframes[i].frames);
+            }
+            float totalSeconds = totalFrames * _session.Rate;
+            string reverseInfo = _session.Reverse ? $" | ⇄ {totalSeconds * 2f:0.00}s" : "";
+
+            GUILayout.FlexibleSpace();
+            GUILayout.Label($"Duration: {totalSeconds:0.00}s ({totalFrames}f){reverseInfo}");
+
             GUILayout.EndHorizontal();
-
             GUILayout.Space(6);
-
             // Горизонтальная лента кадров
             _timelineScroll = GUILayout.BeginScrollView(_timelineScroll, GUILayout.Height(125));
             GUILayout.BeginHorizontal();
-
             for (int i = 0; i < _session.Keyframes.Count; i++)
             {
                 var kf = _session.Keyframes[i];
                 bool isSelected = i == _session.SelectedIndex;
                 Color oldBg = GUI.backgroundColor;
                 GUI.backgroundColor = isSelected ? Color.cyan : Color.white;
-
                 string title = i == 0
-                    ? "Frame 0\n(Start)"
-                    : $"Delta {i}\n({kf.frames}f)\n{(kf.bezier != null ? "Bezier" : (kf.easeMode?.ToString() ?? "Inherit"))}";
-
+                ? "Frame 0\n(Start)"
+                : $"Delta {i}\n({kf.frames}f)\n{(kf.bezier != null ? "Bezier" : (kf.easeMode?.ToString() ?? "Inherit"))}";
                 if (GUILayout.Button(title, GUILayout.Width(82), GUILayout.Height(95)))
                 {
                     _session.SelectAndSnap(i);
                 }
-
                 GUI.backgroundColor = oldBg;
             }
-
             GUILayout.EndHorizontal();
             GUILayout.EndScrollView();
             GUILayout.EndVertical();
         }
-
         private void DrawInspectorPanel()
         {
             GUILayout.BeginVertical(GUI.skin.box, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
-
             int idx = _session.SelectedIndex;
             if (idx <= 0 || idx >= _session.Keyframes.Count)
             {
                 GUILayout.Label(idx == 0
-                    ? "Frame 0 — стартовая поза.\nВыберите Delta 1..N для настройки перехода."
-                    : "Нажмите '+ Capture Frame', чтобы записать стартовую позу.");
+                ? "Frame 0 — стартовая поза.\nВыберите Delta 1..N для настройки перехода."
+                : "Нажмите '+ Capture Frame', чтобы записать стартовую позу.");
                 GUILayout.EndVertical();
                 return;
             }
-
             var delta = _session.Keyframes[idx];
             GUILayout.BeginHorizontal();
-
             // Левая колонка инспектора: длительность и режим сглаживания
             GUILayout.BeginVertical(GUILayout.Width(190));
             GUILayout.Label($"Переход: Delta {idx}");
-
             GUILayout.BeginHorizontal();
             GUILayout.Label("Frames:", GUILayout.Width(55));
             if (int.TryParse(GUILayout.TextField(delta.frames.ToString(), GUILayout.Width(50)), out int f))
                 delta.frames = Mathf.Clamp(f, 1, 600);
             GUILayout.EndHorizontal();
-
             bool useBezier = delta.bezier != null;
             bool newUseBezier = GUILayout.Toggle(useBezier, "Custom Bezier");
             if (newUseBezier != useBezier)
             {
                 delta.bezier = newUseBezier ? new[] { 0.42f, 0.0f, 0.58f, 1.0f } : null;
             }
-
             if (delta.bezier != null && delta.bezier.Length >= 4)
             {
                 float p1x = delta.bezier[0];
@@ -589,14 +562,12 @@ namespace AnimationStudio
                 }
             }
             GUILayout.EndVertical();
-
             // Правая колонка инспектора: квадрат кривой Безье 140x140
             if (delta.bezier != null)
             {
                 Rect bezierRect = GUILayoutUtility.GetRect(140f, 140f, GUILayout.Width(140f), GUILayout.Height(140f));
                 _bezierDrawer.Draw(bezierRect, delta.bezier);
             }
-
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
         }

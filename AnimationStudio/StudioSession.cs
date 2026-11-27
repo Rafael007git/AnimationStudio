@@ -2,9 +2,9 @@
 using FurnitureAnimationsMod;
 using Newtonsoft.Json;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
-using System.Xml;
 using UnityEngine;
 
 namespace AnimationStudio
@@ -25,7 +25,7 @@ namespace AnimationStudio
         public Vector3 rot;
     }
 
-    public class StudioSession
+    public class CharacterTrack
     {
         public string AnimationName = "New_Animation";
         public float Rate = 0.025f;
@@ -35,19 +35,99 @@ namespace AnimationStudio
         public List<KeyframeEntry> Keyframes = new List<KeyframeEntry>();
         public int SelectedIndex = -1;
         public bool IsPlaying = false;
+
+        public Vector3 AnchorPos;
+        public Vector3 AnchorRot;
+        public bool HasAnchor;
+    }
+
+    public class StudioSession
+    {
+        private readonly Dictionary<CharacterCustomization, CharacterTrack> _tracks =
+            new Dictionary<CharacterCustomization, CharacterTrack>();
+
+        public CharacterTrack ActiveTrack { get; private set; } = new CharacterTrack();
+
+        public string AnimationName
+        {
+            get => ActiveTrack.AnimationName;
+            set => ActiveTrack.AnimationName = value;
+        }
+
+        public float Rate
+        {
+            get => ActiveTrack.Rate;
+            set => ActiveTrack.Rate = value;
+        }
+
+        public bool Loop
+        {
+            get => ActiveTrack.Loop;
+            set => ActiveTrack.Loop = value;
+        }
+
+        public bool Reverse
+        {
+            get => ActiveTrack.Reverse;
+            set => ActiveTrack.Reverse = value;
+        }
+
+        public List<KeyframeEntry> Keyframes => ActiveTrack.Keyframes;
+
+        public int SelectedIndex
+        {
+            get => ActiveTrack.SelectedIndex;
+            set => ActiveTrack.SelectedIndex = value;
+        }
+
+        public bool IsPlaying
+        {
+            get => ActiveTrack.IsPlaying;
+            set => ActiveTrack.IsPlaying = value;
+        }
+
+        public bool IsAnyPlaying
+        {
+            get
+            {
+                foreach (var track in _tracks.Values)
+                {
+                    if (track.IsPlaying) return true;
+                }
+                return false;
+            }
+        }
+
         public CharacterCustomization ActiveCharacter { get; private set; }
         public BoneFilterConfig FilterConfig { get; private set; }
+
         public StudioSession()
         {
             FilterConfig = BoneFilterConfig.Load();
         }
+
         public BoneFilterProfile ActiveFilter => FilterConfig.CurrentProfile;
-        private Vector3 _anchorPos;
-        private Vector3 _anchorRot;
-        private bool _hasAnchor;
+
+        private Vector3 _anchorPos
+        {
+            get => ActiveTrack.AnchorPos;
+            set => ActiveTrack.AnchorPos = value;
+        }
+
+        private Vector3 _anchorRot
+        {
+            get => ActiveTrack.AnchorRot;
+            set => ActiveTrack.AnchorRot = value;
+        }
+
+        private bool _hasAnchor
+        {
+            get => ActiveTrack.HasAnchor;
+            set => ActiveTrack.HasAnchor = value;
+        }
+
         private readonly AnchorGizmoMarker _anchorMarker = new AnchorGizmoMarker();
         private string SaveFolder => Path.Combine(Paths.PluginPath, "PoseAnimations");
-        private UIFreePose _cachedFreePoseUI;
 
         public void RefreshActiveCharacter()
         {
@@ -76,36 +156,36 @@ namespace AnimationStudio
 
             if (target != null && target != ActiveCharacter)
             {
-                if (ActiveCharacter != null)
-                {
-                    FurnitureAnimAPI.StopCompanionAnimation(ActiveCharacter);
-                    IsPlaying = false;
-                }
-
                 ActiveCharacter = target;
-                _anchorPos = ActiveCharacter.transform.localPosition;
-                _anchorRot = ActiveCharacter.transform.localEulerAngles;
-                _hasAnchor = true;
 
-                AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Target character switched to: {ActiveCharacter.name}");
-
-                if (Keyframes.Count > 0 && SelectedIndex >= 0 && SelectedIndex < Keyframes.Count)
+                if (!_tracks.TryGetValue(ActiveCharacter, out var track))
                 {
-                    SelectAndSnap(SelectedIndex);
+                    track = new CharacterTrack
+                    {
+                        AnimationName = $"Anim_{ActiveCharacter.name}",
+                        AnchorPos = ActiveCharacter.transform.localPosition,
+                        AnchorRot = ActiveCharacter.transform.localEulerAngles,
+                        HasAnchor = true
+                    };
+                    _tracks[ActiveCharacter] = track;
                 }
+
+                ActiveTrack = track;
+                AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Target character switched to: {ActiveCharacter.name} (frames: {ActiveTrack.Keyframes.Count})");
             }
         }
 
         public void ReleaseCharacter()
         {
-            if (ActiveCharacter == null) return;
+            StopAllPreviews();
+            _tracks.Clear();
+            ActiveTrack = new CharacterTrack();
 
-            FurnitureAnimAPI.StopCompanionAnimation(ActiveCharacter);
-            IsPlaying = false;
-
-            AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Released character control: {ActiveCharacter.name}");
-            ActiveCharacter = null;
-            _hasAnchor = false;
+            if (ActiveCharacter != null)
+            {
+                AnimationStudioPlugin.Log?.LogInfo($"[AnimationStudio] Released character control: {ActiveCharacter.name}");
+                ActiveCharacter = null;
+            }
         }
 
         public void UpdateAnchorAndGizmo(bool isStudioVisible)
@@ -199,7 +279,7 @@ namespace AnimationStudio
             RefreshActiveCharacter();
             if (ActiveCharacter == null || Keyframes.Count < 2) return;
 
-            var data = BuildPoseAnimationData(ActiveFilter, bypassFilter: true);
+            var data = BuildPoseAnimationData(ActiveTrack, ActiveFilter, bypassFilter: true);
 
             if (_hasAnchor)
             {
@@ -221,46 +301,69 @@ namespace AnimationStudio
             IsPlaying = false;
         }
 
+        public void PlayAllPreviews()
+        {
+            StopAllPreviews();
+
+            foreach (var kv in _tracks)
+            {
+                var cc = kv.Key;
+                var track = kv.Value;
+                if (cc == null || !cc.gameObject.activeInHierarchy || track.Keyframes.Count < 2)
+                    continue;
+                var data = BuildPoseAnimationData(track, ActiveFilter, bypassFilter: true);
+                if (track.HasAnchor)
+                {
+                    data.startPos = ToArr(track.AnchorPos);
+                    data.startRot = ToArr(track.AnchorRot);
+                }
+                FurnitureAnimAPI.StartPreview(cc, data, 1.0f);
+                track.IsPlaying = true;
+            }
+        }
+        public void StopAllPreviews()
+        {
+            foreach (var kv in _tracks)
+            {
+                if (kv.Key != null && kv.Value.IsPlaying)
+                {
+                    FurnitureAnimAPI.StopPreview(kv.Key);
+                    kv.Value.IsPlaying = false;
+                }
+            }
+        }
         public void SaveToJson()
         {
             if (Keyframes.Count < 2) return;
             Directory.CreateDirectory(SaveFolder);
-
-            var data = BuildPoseAnimationData(ActiveFilter, bypassFilter: false);
+            var data = BuildPoseAnimationData(ActiveTrack, ActiveFilter, bypassFilter: false);
             if (_hasAnchor)
             {
                 data.startPos = ToArr(_anchorPos);
                 data.startRot = ToArr(_anchorRot);
             }
-
             string safeName = string.IsNullOrWhiteSpace(AnimationName) ? "CustomAnim" : AnimationName.Trim();
             string path = Path.Combine(SaveFolder, safeName + ".json");
             string pngPath = Path.Combine(SaveFolder, safeName + ".png");
-
             string json = JsonConvert.SerializeObject(data, Newtonsoft.Json.Formatting.Indented, new JsonSerializerSettings
             {
                 NullValueHandling = NullValueHandling.Ignore
             });
             File.WriteAllText(path, json);
-
             CaptureThumbnailForAnimation(pngPath);
-
             FurnitureAnimAPI.ReloadAnimationsFromDisk();
             AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Saved: {path}");
         }
-
         private void CaptureThumbnailForAnimation(string pngPath)
         {
             try
             {
                 if (Global.code == null || Global.code.uiFreePose == null || Global.code.freeCamera == null)
                     return;
-
                 var photoComp = Global.code.uiFreePose.GetComponent<TakePhotos>();
                 var cam = Global.code.freeCamera.GetComponent<Camera>();
                 if (photoComp == null || cam == null)
                     return;
-
                 UpdateAnchorAndGizmo(false);
                 Texture2D capturedTex = null;
                 try
@@ -271,9 +374,6 @@ namespace AnimationStudio
                 {
                     UpdateAnchorAndGizmo(true);
                 }
-
-                // Texture2D capturedTex = photoComp.CameraCapture(cam, new Rect(0f, 0f, 300f, 300f), "");
-
                 if (capturedTex != null)
                 {
                     try
@@ -296,24 +396,18 @@ namespace AnimationStudio
                 AnimationStudioPlugin.Log?.LogWarning($"[AnimationStudio] Failed to capture thumbnail: {ex.Message}");
             }
         }
-
         public void LoadFromJson(string fileNameWithoutExt)
         {
             string path = Path.Combine(SaveFolder, fileNameWithoutExt + ".json");
             if (!File.Exists(path)) return;
-
             var data = JsonConvert.DeserializeObject<PoseAnimationData>(File.ReadAllText(path));
             if (data == null) return;
-
+            RefreshActiveCharacter();
             AnimationName = data.name ?? fileNameWithoutExt;
             Rate = data.rate;
             Loop = data.loop;
             Reverse = data.reverse;
             Keyframes.Clear();
-
-            Vector3 baseRootPos = FromArr(data.startPos);
-            Vector3 baseRootRot = FromArr(data.startRot);
-
             // Frame 0 (всегда в начале локальных координат якоря)
             var f0 = new KeyframeEntry { rootPos = Vector3.zero, rootRot = Vector3.zero };
             if (data.boneStartDict != null)
@@ -328,7 +422,6 @@ namespace AnimationStudio
                 }
             }
             Keyframes.Add(f0);
-
             // Deltas -> Keyframes 1..N (локальные смещения относительно якоря)
             if (data.deltas != null)
             {
@@ -342,7 +435,6 @@ namespace AnimationStudio
                         rootPos = FromArr(d.endPosDelta),
                         rootRot = FromArr(d.endRotDelta)
                     };
-
                     if (d.boneDatas != null)
                     {
                         foreach (var kv in d.boneDatas)
@@ -357,12 +449,9 @@ namespace AnimationStudio
                     Keyframes.Add(kf);
                 }
             }
-
             // Выравниваем пропущенные кости и углы по всей ленте кадров
             InflateLoadedKeyframes();
-
             SelectedIndex = Keyframes.Count > 0 ? 0 : -1;
-            RefreshActiveCharacter();
             if (ActiveCharacter != null)
             {
                 _anchorPos = ActiveCharacter.transform.localPosition;
@@ -370,10 +459,8 @@ namespace AnimationStudio
                 _hasAnchor = true;
             }
             if (SelectedIndex == 0) SelectAndSnap(0);
-
             AnimationStudioPlugin.Log.LogInfo($"[AnimationStudio] Загружена анимация: {path} (кадров: {Keyframes.Count})");
         }
-
         public string[] GetAvailableJsonFiles()
         {
             if (!Directory.Exists(SaveFolder)) return Array.Empty<string>();
@@ -382,15 +469,13 @@ namespace AnimationStudio
                 files[i] = Path.GetFileNameWithoutExtension(files[i]);
             return files;
         }
-
         private static readonly HashSet<string> NativeIgnoreBones = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "makeup loc (1)",
-            "lgroup",
-            "rgroup",
-            "head target"
-        };
-
+{
+"makeup loc (1)",
+"lgroup",
+"rgroup",
+"head target"
+};
         private static string FixBoneName(string name)
         {
             if (name.EndsWith("eyesRoot")) return "eyesRoot";
@@ -398,7 +483,6 @@ namespace AnimationStudio
             if (name.EndsWith("head target")) return "head target";
             return name;
         }
-
         private KeyframeEntry ReadCurrentSkeleton(CharacterCustomization character)
         {
             var entry = new KeyframeEntry
@@ -406,15 +490,12 @@ namespace AnimationStudio
                 rootPos = _hasAnchor ? (character.transform.localPosition - _anchorPos) : Vector3.zero,
                 rootRot = _hasAnchor ? (character.transform.localEulerAngles - _anchorRot) : Vector3.zero
             };
-
             if (character.bonesNeedSave == null) return entry;
-
             foreach (Transform t in character.bonesNeedSave)
             {
                 if (t == null || t == character.transform) continue;
                 string boneName = FixBoneName(t.name);
                 if (NativeIgnoreBones.Contains(boneName)) continue;
-
                 entry.bones[boneName] = new BonePose
                 {
                     pos = t.localPosition,
@@ -423,48 +504,38 @@ namespace AnimationStudio
             }
             return entry;
         }
-
         public void SelectAndSnap(int index)
         {
             RefreshActiveCharacter();
             if (ActiveCharacter == null || index < 0 || index >= Keyframes.Count) return;
-
             // Автоматически включаем режим FREEPOSE, если до этого была выбрана ванильная поза
             if (Global.code != null &&
-                Global.code.uiFreePose != null &&
-                Global.code.uiFreePose.gameObject.activeInHierarchy &&
-                !Global.code.uiFreePose.isCustomPoseMode)
+            Global.code.uiFreePose != null &&
+            Global.code.uiFreePose.gameObject.activeInHierarchy &&
+            !Global.code.uiFreePose.isCustomPoseMode)
             {
                 Global.code.uiFreePose.LetRuntimeTransformRun();
             }
-
             if (IsPlaying)
             {
-                FurnitureAnimAPI.StopPreview(ActiveCharacter);
-                IsPlaying = false;
+                StopAllPreviews();
             }
-
             SelectedIndex = index;
             var kf = Keyframes[index];
-
             if (!_hasAnchor)
             {
                 _anchorPos = ActiveCharacter.transform.localPosition;
                 _anchorRot = ActiveCharacter.transform.localEulerAngles;
                 _hasAnchor = true;
             }
-
             ActiveCharacter.transform.localPosition = _anchorPos + kf.rootPos;
             ActiveCharacter.transform.localEulerAngles = _anchorRot + kf.rootRot;
-
             if (ActiveCharacter.bonesNeedSave == null) return;
-
             foreach (Transform t in ActiveCharacter.bonesNeedSave)
             {
                 if (t == null) continue;
                 string boneName = FixBoneName(t.name);
                 if (NativeIgnoreBones.Contains(boneName)) continue;
-
                 if (kf.bones.TryGetValue(boneName, out var bonePose))
                 {
                     t.localPosition = bonePose.pos;
@@ -472,18 +543,15 @@ namespace AnimationStudio
                 }
             }
         }
-
         // Вызывается в конце LoadFromJson(string fileNameWithoutExt) перед SelectAndSnap(0)
         private void InflateLoadedKeyframes()
         {
             if (Keyframes.Count < 2) return;
-
             // 1. Собираем все кости, встречающиеся хоть в одном кадре
             var allBones = new HashSet<string>();
             foreach (var kf in Keyframes)
                 foreach (var b in kf.bones.Keys)
                     allBones.Add(b);
-
             // 2. Протягиваем значения вперед по всей ленте кадров
             for (int i = 0; i < Keyframes.Count; i++)
             {
@@ -500,30 +568,27 @@ namespace AnimationStudio
                 }
             }
         }
-
-        // Сборка PoseAnimationData с фильтрами (Black/White/Grey), инфляцией и выпрямлением углов
-        private PoseAnimationData BuildPoseAnimationData(BoneFilterProfile filter, bool bypassFilter = false)
+        // Сборка PoseAnimationData для указанной дорожки с фильтрами, инфляцией и выпрямлением углов
+        private static PoseAnimationData BuildPoseAnimationData(CharacterTrack track, BoneFilterProfile filter, bool bypassFilter = false)
         {
-            Vector3 basePos = _hasAnchor ? _anchorPos : Vector3.zero;
-            Vector3 baseRot = _hasAnchor ? _anchorRot : Vector3.zero;
-            var f0 = Keyframes[0];
-
+            Vector3 basePos = track.HasAnchor ? track.AnchorPos : Vector3.zero;
+            Vector3 baseRot = track.HasAnchor ? track.AnchorRot : Vector3.zero;
+            var keyframes = track.Keyframes;
+            var f0 = keyframes[0];
             var data = new PoseAnimationData
             {
-                name = AnimationName,
-                rate = Rate,
-                loop = Loop,
-                reverse = Reverse,
+                name = track.AnimationName,
+                rate = track.Rate,
+                loop = track.Loop,
+                reverse = track.Reverse,
                 startPos = ToArr(basePos + f0.rootPos),
                 startRot = ToArr(baseRot + f0.rootRot)
             };
-
             // 1. Собираем все уникальные кости и проверяем по активному профилю фильтра
             var allBones = new HashSet<string>();
-            foreach (var kf in Keyframes)
+            foreach (var kf in keyframes)
                 foreach (var b in kf.bones.Keys)
                     allBones.Add(b);
-
             var approvedBones = new List<string>();
             foreach (var boneName in allBones)
             {
@@ -532,7 +597,6 @@ namespace AnimationStudio
                     approvedBones.Add(boneName);
                 }
             }
-
             // 2. Заполняем boneStartDict для всех прошедших фильтр костей
             foreach (var boneName in approvedBones)
             {
@@ -541,11 +605,10 @@ namespace AnimationStudio
                     data.boneStartDict[boneName] = new BoneDelta(ToArr(startPose.pos), ToArr(startPose.rot));
                 }
             }
-
             // 3. Строим бесшовную цепочку дельт с выпрямлением углов
-            for (int i = 1; i < Keyframes.Count; i++)
+            for (int i = 1; i < keyframes.Count; i++)
             {
-                var curr = Keyframes[i];
+                var curr = keyframes[i];
                 var delta = new PoseAnimationDelta
                 {
                     frames = Mathf.Max(1, curr.frames),
@@ -554,27 +617,23 @@ namespace AnimationStudio
                     endPosDelta = ToArr(curr.rootPos - f0.rootPos),
                     endRotDelta = ToArr(curr.rootRot - f0.rootRot)
                 };
-
                 foreach (var boneName in approvedBones)
                 {
                     // Берем точку старта строго из финиша предыдущей дельты (или boneStartDict)
                     float[] prevPos = (i > 1 && data.deltas[i - 2].boneDatas.TryGetValue(boneName, out var prevDelta))
-                        ? prevDelta.endPos
-                        : (data.boneStartDict.TryGetValue(boneName, out var bStart) ? bStart.endPos : null);
-
+                    ? prevDelta.endPos
+                    : (data.boneStartDict.TryGetValue(boneName, out var bStart) ? bStart.endPos : null);
                     float[] prevRot = (i > 1 && data.deltas[i - 2].boneDatas.TryGetValue(boneName, out var prevDeltaR))
-                        ? prevDeltaR.endRot
-                        : (data.boneStartDict.TryGetValue(boneName, out var bStartR) ? bStartR.endRot : null);
-
+                    ? prevDeltaR.endRot
+                    : (data.boneStartDict.TryGetValue(boneName, out var bStartR) ? bStartR.endRot : null);
                     if (prevPos == null || prevRot == null) continue;
-
                     if (curr.bones.TryGetValue(boneName, out var targetPose))
                     {
                         delta.boneDatas[boneName] = new BoneDelta(
-                            prevPos,
-                            ToArr(targetPose.pos),
-                            prevRot,
-                            ToArr(targetPose.rot)
+                        prevPos,
+                        ToArr(targetPose.pos),
+                        prevRot,
+                        ToArr(targetPose.rot)
                         );
                     }
                     else
@@ -583,22 +642,17 @@ namespace AnimationStudio
                         delta.boneDatas[boneName] = new BoneDelta(prevPos, prevPos, prevRot, prevRot);
                     }
                 }
-
                 data.deltas.Add(delta);
             }
-
             return data;
         }
-
         private bool CheckBoneMovedAcrossTimeline(string boneName, float minAngle, float minPos)
         {
             if (Keyframes.Count < 2 || !Keyframes[0].bones.TryGetValue(boneName, out var basePose))
                 return false;
-
             for (int i = 1; i < Keyframes.Count; i++)
             {
                 if (!Keyframes[i].bones.TryGetValue(boneName, out var p)) continue;
-
                 if (Vector3.Distance(basePose.pos, p.pos) > minPos) return true;
                 if (Mathf.Abs(Mathf.DeltaAngle(basePose.rot.x, p.rot.x)) > minAngle) return true;
                 if (Mathf.Abs(Mathf.DeltaAngle(basePose.rot.y, p.rot.y)) > minAngle) return true;
@@ -606,19 +660,16 @@ namespace AnimationStudio
             }
             return false;
         }
-
         private static Vector3 StraightenEuler(Vector3 start, Vector3 end)
         {
             return new Vector3(
-                start.x + Mathf.DeltaAngle(start.x, end.x),
-                start.y + Mathf.DeltaAngle(start.y, end.y),
-                start.z + Mathf.DeltaAngle(start.z, end.z)
+            start.x + Mathf.DeltaAngle(start.x, end.x),
+            start.y + Mathf.DeltaAngle(start.y, end.y),
+            start.z + Mathf.DeltaAngle(start.z, end.z)
             );
         }
-
         private static float[] ToArr(Vector3 v) => new[] { v.x, v.y, v.z };
-
         private static Vector3 FromArr(float[] a) =>
-            (a != null && a.Length >= 3) ? new Vector3(a[0], a[1], a[2]) : Vector3.zero;
+        (a != null && a.Length >= 3) ? new Vector3(a[0], a[1], a[2]) : Vector3.zero;
     }
 }

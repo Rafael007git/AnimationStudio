@@ -1,6 +1,7 @@
 # AnimationStudio
 
 ## ToDo: features
+Record items in hand slots and display them during playback
 
 ## Bugs
 
